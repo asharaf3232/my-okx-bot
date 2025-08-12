@@ -1,5 +1,5 @@
 // =================================================================
-// OKX Advanced Analytics Bot - v106 (The Accountability Fix)
+// OKX Advanced Analytics Bot - v107 (Conversational Flows)
 // =================================================================
 
 const express = require("express");
@@ -16,8 +16,9 @@ const PORT = process.env.PORT || 3000;
 const AUTHORIZED_USER_ID = parseInt(process.env.AUTHORIZED_USER_ID);
 const API_BASE_URL = "https://www.okx.com";
 
-// --- State Variables ---
-let waitingState = null;
+// --- State Management ---
+// نظام جديد لإدارة المحادثات التفاعلية مع المستخدم
+const userStates = new Map();
 
 // =================================================================
 // SECTION 1: DATABASE AND HELPER FUNCTIONS
@@ -96,6 +97,43 @@ async function updateVirtualTradeStatus(tradeId, status, finalPrice) {
     } catch (e) {
         console.error(`Error updating virtual trade ${tradeId}:`, e);
     }
+}
+
+// --- وظائف جديدة لإدارة تنبيهات الأسعار المستهدفة ---
+async function saveTargetPriceAlert(alert) {
+    try {
+        const alertWithId = { ...alert, _id: new crypto.randomBytes(16).toString("hex"), createdAt: new Date(), status: 'active' };
+        await getCollection("targetPriceAlerts").insertOne(alertWithId);
+    } catch (e) {
+        console.error("Error in saveTargetPriceAlert:", e);
+    }
+}
+
+async function getActiveTargetPriceAlerts(userId) {
+    try {
+        return await getCollection("targetPriceAlerts").find({ userId, status: 'active' }).toArray();
+    } catch (e) {
+        console.error("Error fetching active target price alerts:", e);
+        return [];
+    }
+}
+
+async function updateTargetPriceAlertStatus(alertId, status) {
+    try {
+        await getCollection("targetPriceAlerts").updateOne({ _id: alertId }, { $set: { status: status } });
+    } catch (e) {
+        console.error(`Error updating target price alert ${alertId}:`, e);
+    }
+}
+
+async function deleteTargetPriceAlertByIndex(userId, index) {
+    const alerts = await getActiveTargetPriceAlerts(userId);
+    if (index >= 0 && index < alerts.length) {
+        const alertToDelete = alerts[index];
+        await getCollection("targetPriceAlerts").deleteOne({ _id: alertToDelete._id });
+        return true;
+    }
+    return false;
 }
 
 
@@ -593,7 +631,7 @@ async function updatePositionAndAnalyze(asset, amountChange, price, newTotalAmou
             const closeReportData = {
                 asset,
                 pnl: finalPnl,
-                pnlPercent: finalPnlPercent, // ✅ THIS IS THE FIX
+                pnlPercent: finalPnlPercent,
                 durationDays,
                 avgBuyPrice: position.avgBuyPrice,
                 avgSellPrice,
@@ -894,6 +932,35 @@ async function monitorVirtualTrades() {
     }
 }
 
+async function checkTargetPriceAlerts() {
+    try {
+        const activeAlerts = await getActiveTargetPriceAlerts(AUTHORIZED_USER_ID);
+        if (activeAlerts.length === 0) return;
+
+        const prices = await getMarketPrices();
+        if (!prices) return;
+
+        for (const alert of activeAlerts) {
+            const currentPrice = prices[alert.instId]?.price;
+            if (currentPrice === undefined) continue;
+
+            const targetReached = (alert.type === 'above' && currentPrice >= alert.targetPrice) ||
+                                  (alert.type === 'below' && currentPrice <= alert.targetPrice);
+
+            if (targetReached) {
+                const message = `🚨 *تنبيه سعر مستهدف!* \n\n` +
+                                `*العملة:* \`${alert.instId}\`\n` +
+                                `*الشرط:* الوصول إلى \`${alert.targetPrice}\`\n` +
+                                `*السعر الحالي:* \`${currentPrice}\``;
+                await bot.api.sendMessage(AUTHORIZED_USER_ID, message, { parse_mode: "Markdown" });
+                await updateTargetPriceAlertStatus(alert._id, 'triggered');
+            }
+        }
+    } catch (error) {
+        console.error("Error in checkTargetPriceAlerts:", error);
+    }
+}
+
 
 // =================================================================
 // SECTION 5: BOT SETUP, KEYBOARDS, AND HANDLERS
@@ -902,9 +969,10 @@ async function monitorVirtualTrades() {
 const mainKeyboard = new Keyboard()
     .text("📊 عرض المحفظة").text("📈 أداء المحفظة").row()
     .text("🚀 تحليل السوق").text("💡 توصية افتراضية").row()
-    .text("⚡ إحصائيات سريعة").text("ℹ️ معلومات عملة").row()
-    .text("🔔 ضبط تنبيه").text("🧮 حاسبة الربح والخسارة").row()
-    .text("⚙️ الإعدادات").resized();
+    .text("➕ إضافة تنبيه سعر").text("🔔 عرض تنبيهاتي").row()
+    .text("ℹ️ معلومات عملة").text("⚙️ الإعدادات").resized();
+
+const cancelKeyboard = new Keyboard().text("إلغاء").resized();
 
 const virtualTradeKeyboard = new InlineKeyboard()
     .text("➕ إضافة توصية جديدة", "add_virtual_trade").row()
@@ -916,7 +984,7 @@ async function sendSettingsMenu(ctx) {
         .text("💰 تعيين رأس المال", "set_capital")
         .text("💼 عرض المراكز المفتوحة", "view_positions").row()
         .text("🚨 إدارة تنبيهات الحركة", "manage_movement_alerts")
-        .text("🗑️ حذف تنبيه سعر", "delete_alert").row()
+        .text("🗑️ حذف تنبيه سعر", "delete_target_alert").row() // تم التحديث
         .text(`📰 الملخص اليومي: ${settings.dailySummary ? '✅' : '❌'}`, "toggle_summary")
         .text(`🚀 النشر للقناة: ${settings.autoPostToChannel ? '✅' : '❌'}`, "toggle_autopost").row()
         .text(`🐞 وضع التشخيص: ${settings.debugMode ? '✅' : '❌'}`, "toggle_debug")
@@ -953,8 +1021,9 @@ bot.use(async (ctx, next) => {
 });
 
 bot.command("start", (ctx) => {
+    userStates.delete(ctx.from.id);
     const welcomeMessage = `🤖 *أهلاً بك في بوت OKX التحليلي المتكامل، مساعدك الذكي لإدارة وتحليل محفظتك الاستثمارية.*\n\n` +
-        `*الإصدار: v106 - The Accountability Fix*\n\n` +
+        `*الإصدار: v107 - Conversational Flows*\n\n` +
         `أنا هنا لمساعدتك على:\n` +
         `- 📊 تتبع أداء محفظتك لحظة بلحظة.\n` +
         `- 🚀 تحليل اتجاهات السوق والفرص المتاحة.\n` +
@@ -965,6 +1034,7 @@ bot.command("start", (ctx) => {
 });
 
 bot.command("settings", async (ctx) => {
+    userStates.delete(ctx.from.id);
     await sendSettingsMenu(ctx);
 });
 
@@ -992,6 +1062,26 @@ bot.command("pnl", async (ctx) => {
 bot.on("callback_query:data", async (ctx) => {
     await ctx.answerCallbackQuery();
     const data = ctx.callbackQuery.data;
+    const userId = ctx.from.id;
+    const state = userStates.get(userId);
+
+    // معالجة خاصة لأزرار تحديد نوع التنبيه
+    if (state && state.action === 'adding_price_alert_step_3' && data.startsWith('alert_type_')) {
+        const [_, type, priceStr] = data.split(':');
+        const targetPrice = parseFloat(priceStr);
+
+        const alert = {
+            userId: userId,
+            instId: state.instId,
+            targetPrice: targetPrice,
+            type: type // 'above' or 'below'
+        };
+
+        await saveTargetPriceAlert(alert);
+        await ctx.editMessageText(`✅ تم ضبط التنبيه بنجاح!\nسأقوم بتنبيهك عندما يصل سعر ${alert.instId} إلى ${alert.targetPrice}.`, { reply_markup: undefined });
+        userStates.delete(userId); // إنهاء المحادثة
+        return;
+    }
 
     try {
         if (data.startsWith("chart_")) {
@@ -1068,7 +1158,7 @@ bot.on("callback_query:data", async (ctx) => {
         
         switch(data) {
             case "add_virtual_trade":
-                waitingState = 'add_virtual_trade';
+                userStates.set(userId, { action: 'add_virtual_trade' });
                 await ctx.editMessageText(
                     "✍️ *لإضافة توصية افتراضية، أرسل التفاصيل في 5 أسطر منفصلة:*\n\n" +
                     "`BTC-USDT`\n" +
@@ -1115,7 +1205,7 @@ bot.on("callback_query:data", async (ctx) => {
                 await ctx.editMessageText(reportMsg, { parse_mode: "Markdown", reply_markup: virtualTradeKeyboard });
                 break;
             case "set_capital": 
-                waitingState = 'set_capital'; 
+                userStates.set(userId, { action: 'set_capital' }); 
                 await ctx.editMessageText("💰 يرجى إرسال المبلغ الجديد لرأس المال (رقم فقط)."); 
                 break;
             case "back_to_settings": 
@@ -1125,11 +1215,11 @@ bot.on("callback_query:data", async (ctx) => {
                 await sendMovementAlertsMenu(ctx); 
                 break;
             case "set_global_alert": 
-                waitingState = 'set_global_alert_state'; 
+                userStates.set(userId, { action: 'set_global_alert_state' }); 
                 await ctx.editMessageText("✍️ يرجى إرسال النسبة العامة الجديدة (مثال: `5`)."); 
                 break;
             case "set_coin_alert": 
-                waitingState = 'set_coin_alert_state'; 
+                userStates.set(userId, { action: 'set_coin_alert_state' }); 
                 await ctx.editMessageText("✍️ يرجى إرسال رمز العملة والنسبة.\n*مثال:*\n`BTC 2.5`"); 
                 break;
             case "view_positions":
@@ -1145,18 +1235,19 @@ bot.on("callback_query:data", async (ctx) => {
                 }
                 await ctx.editMessageText(posMsg, { parse_mode: "Markdown", reply_markup: new InlineKeyboard().text("🔙 العودة للإعدادات", "back_to_settings") });
                 break;
-            case "delete_alert":
-                const alerts = await loadAlerts();
-                if (alerts.length === 0) { 
-                    await ctx.editMessageText("ℹ️ لا توجد تنبيهات مسجلة.", { reply_markup: new InlineKeyboard().text("🔙 العودة للإعدادات", "back_to_settings") }); 
+            case "delete_target_alert":
+                const targetAlerts = await getActiveTargetPriceAlerts(userId);
+                if (targetAlerts.length === 0) { 
+                    await ctx.editMessageText("ℹ️ لا توجد تنبيهات سعر مسجلة.", { reply_markup: new InlineKeyboard().text("🔙 العودة للإعدادات", "back_to_settings") }); 
                     break; 
                 }
                 let alertMsg = "🗑️ *اختر التنبيه لحذفه:*\n\n";
-                alerts.forEach((alert, i) => { 
-                    alertMsg += `*${i + 1}.* \`${alert.instId} ${alert.condition} ${alert.price}\`\n`; 
+                targetAlerts.forEach((alert, i) => { 
+                    const condition = alert.type === 'above' ? '>' : '<';
+                    alertMsg += `*${i + 1}.* \`${alert.instId} ${condition} ${alert.targetPrice}\`\n`; 
                 });
                 alertMsg += "\n*أرسل رقم التنبيه الذي تود حذفه.*";
-                waitingState = 'delete_alert_number';
+                userStates.set(userId, { action: 'delete_alert_number' });
                 await ctx.editMessageText(alertMsg, { parse_mode: "Markdown" });
                 break;
             case "toggle_summary": 
@@ -1170,7 +1261,7 @@ bot.on("callback_query:data", async (ctx) => {
                 await sendSettingsMenu(ctx);
                 break;
             case "delete_all_data":
-                waitingState = 'confirm_delete_all';
+                userStates.set(userId, { action: 'confirm_delete_all' });
                 await ctx.editMessageText("⚠️ *تحذير: هذا الإجراء لا يمكن التراجع عنه!* لحذف كل شيء، أرسل: `تأكيد الحذف`", { parse_mode: "Markdown" });
                 break;
         }
@@ -1185,109 +1276,156 @@ bot.on("callback_query:data", async (ctx) => {
 });
 
 bot.on("message:text", async (ctx) => {
+    const userId = ctx.from.id;
     const text = ctx.message.text.trim();
     if (text.startsWith('/')) return;
 
-    if (waitingState) {
-        const state = waitingState;
-        waitingState = null;
-        
-        switch (state) {
+    const state = userStates.get(userId);
+    
+    // --- 1. التعامل مع الإلغاء ---
+    if (text === "إلغاء") {
+        if (state) {
+            userStates.delete(userId);
+            await ctx.reply("تم الإلغاء بنجاح.", { reply_markup: mainKeyboard });
+        } else {
+            await ctx.reply("لا يوجد شيء لإلغائه.", { reply_markup: mainKeyboard });
+        }
+        return;
+    }
+
+    // --- 2. التعامل مع المحادثات الجارية ---
+    if (state) {
+        // يتم توجيه جميع الردود أثناء وجود محادثة نشطة هنا
+        switch (state.action) {
+            case 'adding_price_alert_step_1':
+                const instId = text.toUpperCase().trim();
+                if (!/^[A-Z0-9]+-USDT$/.test(instId)) {
+                    await ctx.reply("صيغة العملة غير صحيحة. الرجاء إدخالها بالشكل الصحيح (مثال: BTC-USDT).", { reply_markup: cancelKeyboard });
+                    return;
+                }
+                userStates.set(userId, { action: 'adding_price_alert_step_2', instId });
+                await ctx.reply(`رائع. الآن، ما هو السعر المستهدف لـ ${instId} الذي تريد التنبيه عنده؟`, { reply_markup: cancelKeyboard });
+                break;
+
+            case 'adding_price_alert_step_2':
+                const targetPrice = parseFloat(text);
+                if (isNaN(targetPrice) || targetPrice <= 0) {
+                    await ctx.reply("الرجاء إدخال سعر صحيح (رقم أكبر من صفر).", { reply_markup: cancelKeyboard });
+                    return;
+                }
+                const priceKeyboard = new InlineKeyboard()
+                    .text("⬆️ عندما يتجاوزه", `alert_type_above:${targetPrice}`)
+                    .text("⬇️ عندما ينخفض عنه", `alert_type_below:${targetPrice}`);
+                userStates.set(userId, { ...state, action: 'adding_price_alert_step_3' });
+                await ctx.reply(`ممتاز. السعر المستهدف هو ${targetPrice}.\n\nمتى تريد أن أنبهك؟`, { reply_markup: priceKeyboard });
+                break;
+            
             case 'add_virtual_trade':
                 try {
                     const lines = text.split('\n').map(line => line.trim());
                     if (lines.length < 5) throw new Error("التنسيق غير صحيح، يجب أن يتكون من 5 أسطر.");
 
-                    const instId = lines[0].toUpperCase();
-                    const entryPrice = parseFloat(lines[1]);
-                    const targetPrice = parseFloat(lines[2]);
-                    const stopLossPrice = parseFloat(lines[3]);
-                    const virtualAmount = parseFloat(lines[4]);
+                    const v_instId = lines[0].toUpperCase();
+                    const v_entryPrice = parseFloat(lines[1]);
+                    const v_targetPrice = parseFloat(lines[2]);
+                    const v_stopLossPrice = parseFloat(lines[3]);
+                    const v_virtualAmount = parseFloat(lines[4]);
                     
-                    if (!instId.endsWith('-USDT')) throw new Error("رمز العملة يجب أن ينتهي بـ -USDT.");
-                    if ([entryPrice, targetPrice, stopLossPrice, virtualAmount].some(isNaN)) {
+                    if (!v_instId.endsWith('-USDT')) throw new Error("رمز العملة يجب أن ينتهي بـ -USDT.");
+                    if ([v_entryPrice, v_targetPrice, v_stopLossPrice, v_virtualAmount].some(isNaN)) {
                         throw new Error("تأكد من أن جميع القيم المدخلة هي أرقام صالحة.");
                     }
-                    if (entryPrice <= 0 || targetPrice <= 0 || stopLossPrice <= 0 || virtualAmount <= 0) {
+                    if (v_entryPrice <= 0 || v_targetPrice <= 0 || v_stopLossPrice <= 0 || v_virtualAmount <= 0) {
                         throw new Error("جميع القيم الرقمية يجب أن تكون أكبر من صفر.");
                     }
-                    if (targetPrice <= entryPrice) throw new Error("سعر الهدف يجب أن يكون أعلى من سعر الدخول.");
-                    if (stopLossPrice >= entryPrice) throw new Error("سعر وقف الخسارة يجب أن يكون أقل من سعر الدخول.");
+                    if (v_targetPrice <= v_entryPrice) throw new Error("سعر الهدف يجب أن يكون أعلى من سعر الدخول.");
+                    if (v_stopLossPrice >= v_entryPrice) throw new Error("سعر وقف الخسارة يجب أن يكون أقل من سعر الدخول.");
 
-                    const tradeData = { instId, entryPrice, targetPrice, stopLossPrice, virtualAmount, status: 'active', createdAt: new Date() };
+                    const tradeData = { instId: v_instId, entryPrice: v_entryPrice, targetPrice: v_targetPrice, stopLossPrice: v_stopLossPrice, virtualAmount: v_virtualAmount, status: 'active', createdAt: new Date() };
                     await saveVirtualTrade(tradeData);
-                    await ctx.reply(`✅ *تمت إضافة التوصية الافتراضية بنجاح.*\n\nسيتم إعلامك عند تحقيق الهدف أو تفعيل وقف الخسارة.`, { parse_mode: "Markdown" });
+                    await ctx.reply(`✅ *تمت إضافة التوصية الافتراضية بنجاح.*\n\nسيتم إعلامك عند تحقيق الهدف أو تفعيل وقف الخسارة.`, { parse_mode: "Markdown", reply_markup: mainKeyboard });
                 } catch (e) {
-                    await ctx.reply(`❌ *خطأ في إضافة التوصية:*\n${e.message}\n\nالرجاء المحاولة مرة أخرى بالتنسيق الصحيح.`);
+                    await ctx.reply(`❌ *خطأ في إضافة التوصية:*\n${e.message}\n\nالرجاء المحاولة مرة أخرى بالتنسيق الصحيح.`, { reply_markup: mainKeyboard });
                 }
-                return;
+                userStates.delete(userId);
+                break;
+
             case 'set_capital':
                 const amount = parseFloat(text);
                 if (!isNaN(amount) && amount >= 0) {
                     await saveCapital(amount);
-                    await ctx.reply(`✅ *تم تحديث رأس المال إلى:* \`$${formatNumber(amount)}\``, { parse_mode: "Markdown" });
+                    await ctx.reply(`✅ *تم تحديث رأس المال إلى:* \`$${formatNumber(amount)}\``, { parse_mode: "Markdown", reply_markup: mainKeyboard });
                 } else {
-                    await ctx.reply("❌ مبلغ غير صالح.");
+                    await ctx.reply("❌ مبلغ غير صالح. تم الإلغاء.", { reply_markup: mainKeyboard });
                 }
-                return;
+                userStates.delete(userId);
+                break;
+
             case 'set_global_alert_state':
                 const percent = parseFloat(text);
                 if (!isNaN(percent) && percent > 0) {
                     const alertSettingsGlobal = await loadAlertSettings();
                     alertSettingsGlobal.global = percent;
                     await saveAlertSettings(alertSettingsGlobal);
-                    await ctx.reply(`✅ تم تحديث النسبة العامة لتنبيهات الحركة إلى \`${percent}%\`.`);
+                    await ctx.reply(`✅ تم تحديث النسبة العامة لتنبيهات الحركة إلى \`${percent}%\`.`, { reply_markup: mainKeyboard });
                 } else {
-                     await ctx.reply("❌ *خطأ:* النسبة يجب أن تكون رقمًا موجبًا.");
+                     await ctx.reply("❌ *خطأ:* النسبة يجب أن تكون رقمًا موجبًا.", { reply_markup: mainKeyboard });
                 }
-                return;
+                userStates.delete(userId);
+                break;
+
             case 'set_coin_alert_state':
                 const parts_coin_alert = text.split(/\s+/);
                 if (parts_coin_alert.length !== 2) {
-                    await ctx.reply("❌ *صيغة غير صحيحة*. يرجى إرسال رمز العملة ثم النسبة.");
-                    return;
-                }
-                const [symbol_coin_alert, percentStr_coin_alert] = parts_coin_alert;
-                const coinPercent = parseFloat(percentStr_coin_alert);
-                if (isNaN(coinPercent) || coinPercent < 0) {
-                    await ctx.reply("❌ *خطأ:* النسبة يجب أن تكون رقمًا.");
-                    return;
-                }
-                const alertSettingsCoin = await loadAlertSettings();
-                if (coinPercent === 0) {
-                    delete alertSettingsCoin.overrides[symbol_coin_alert.toUpperCase()];
-                    await ctx.reply(`✅ تم حذف الإعداد المخصص لـ *${symbol_coin_alert.toUpperCase()}* وستتبع الآن النسبة العامة.`);
+                    await ctx.reply("❌ *صيغة غير صحيحة*. يرجى إرسال رمز العملة ثم النسبة.", { reply_markup: mainKeyboard });
                 } else {
-                    alertSettingsCoin.overrides[symbol_coin_alert.toUpperCase()] = coinPercent;
-                    await ctx.reply(`✅ تم تحديث النسبة المخصصة لـ *${symbol_coin_alert.toUpperCase()}* إلى \`${coinPercent}%\`.`);
+                    const [symbol_coin_alert, percentStr_coin_alert] = parts_coin_alert;
+                    const coinPercent = parseFloat(percentStr_coin_alert);
+                    if (isNaN(coinPercent) || coinPercent < 0) {
+                        await ctx.reply("❌ *خطأ:* النسبة يجب أن تكون رقمًا.", { reply_markup: mainKeyboard });
+                    } else {
+                        const alertSettingsCoin = await loadAlertSettings();
+                        if (coinPercent === 0) {
+                            delete alertSettingsCoin.overrides[symbol_coin_alert.toUpperCase()];
+                            await ctx.reply(`✅ تم حذف الإعداد المخصص لـ *${symbol_coin_alert.toUpperCase()}* وستتبع الآن النسبة العامة.`, { reply_markup: mainKeyboard });
+                        } else {
+                            alertSettingsCoin.overrides[symbol_coin_alert.toUpperCase()] = coinPercent;
+                            await ctx.reply(`✅ تم تحديث النسبة المخصصة لـ *${symbol_coin_alert.toUpperCase()}* إلى \`${coinPercent}%\`.`, { reply_markup: mainKeyboard });
+                        }
+                        await saveAlertSettings(alertSettingsCoin);
+                    }
                 }
-                await saveAlertSettings(alertSettingsCoin);
-                return;
+                userStates.delete(userId);
+                break;
+
             case 'confirm_delete_all':
                 if (text === 'تأكيد الحذف') {
                     await getCollection("configs").deleteMany({});
                     await getCollection("virtualTrades").deleteMany({});
                     await getCollection("tradeHistory").deleteMany({});
-                    await ctx.reply("✅ تم حذف جميع بياناتك.");
+                    await getCollection("targetPriceAlerts").deleteMany({});
+                    await ctx.reply("✅ تم حذف جميع بياناتك.", { reply_markup: mainKeyboard });
                 } else {
-                    await ctx.reply("❌ تم إلغاء الحذف.");
+                    await ctx.reply("❌ تم إلغاء الحذف.", { reply_markup: mainKeyboard });
                 }
-                return;
+                userStates.delete(userId);
+                break;
+
             case 'coin_info':
-                const instId = text.toUpperCase();
-                const coinSymbol = instId.split('-')[0];
-                const loadingMsg = await ctx.reply(`⏳ جاري تجهيز التقرير لـ ${instId}...`);
+                const c_instId = text.toUpperCase();
+                const coinSymbol = c_instId.split('-')[0];
+                const loadingMsg = await ctx.reply(`⏳ جاري تجهيز التقرير لـ ${c_instId}...`);
 
                 try {
                     const [details, prices, historicalPerf, techAnalysis] = await Promise.all([
-                        getInstrumentDetails(instId), getMarketPrices(), getHistoricalPerformance(coinSymbol), getTechnicalAnalysis(instId)
+                        getInstrumentDetails(c_instId), getMarketPrices(), getHistoricalPerformance(coinSymbol), getTechnicalAnalysis(c_instId)
                     ]);
 
                     if (details.error || !prices) {
                         throw new Error(details.error || "فشل جلب البيانات");
                     }
 
-                    let msg = `ℹ️ *الملف التحليلي الكامل | ${instId}*\n\n*القسم الأول: بيانات السوق*\n`;
+                    let msg = `ℹ️ *الملف التحليلي الكامل | ${c_instId}*\n\n*القسم الأول: بيانات السوق*\n`;
                     msg += ` ▫️ *السعر الحالي:* \`$${formatNumber(details.price, 4)}\`\n`;
                     msg += ` ▫️ *أعلى (24س):* \`$${formatNumber(details.high24h, 4)}\`\n`;
                     msg += ` ▫️ *أدنى (24س):* \`$${formatNumber(details.low24h, 4)}\`\n\n`;
@@ -1333,44 +1471,28 @@ bot.on("message:text", async (ctx) => {
                     console.error("Error fetching coin info:", e);
                     await ctx.api.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, `❌ حدث خطأ أثناء جلب البيانات: ${e.message}`);
                 }
-                return;
+                userStates.delete(userId);
+                break;
             
-            case 'set_alert':
-                const parts_alert = text.trim().split(/\s+/);
-                if (parts_alert.length !== 3) {
-                    await ctx.reply("❌ صيغة غير صحيحة. مثال: `BTC > 50000`");
-                    return;
-                }
-                const [symbol, cond, priceStr] = parts_alert;
-                if (cond !== '>' && cond !== '<') {
-                    await ctx.reply("❌ الشرط غير صالح. استخدم `>` أو `<`.");
-                    return;
-                }
-                const price = parseFloat(priceStr);
-                if (isNaN(price) || price <= 0) {
-                    await ctx.reply("❌ السعر غير صالح.");
-                    return;
-                }
-                const allAlerts = await loadAlerts();
-                allAlerts.push({ instId: symbol.toUpperCase() + '-USDT', condition: cond, price: price });
-                await saveAlerts(allAlerts);
-                await ctx.reply(`✅ تم ضبط التنبيه: ${symbol.toUpperCase()} ${cond} ${price}`, { parse_mode: "Markdown" });
-                return;
-
             case 'delete_alert_number':
-                let currentAlerts = await loadAlerts();
                 const index = parseInt(text) - 1;
-                if (isNaN(index) || index < 0 || index >= currentAlerts.length) {
-                    await ctx.reply("❌ رقم غير صالح.");
-                    return;
+                if (isNaN(index)) {
+                    await ctx.reply("❌ رقم غير صالح.", { reply_markup: mainKeyboard });
+                } else {
+                    const success = await deleteTargetPriceAlertByIndex(userId, index);
+                    if (success) {
+                        await ctx.reply(`✅ تم حذف التنبيه.`, { reply_markup: mainKeyboard });
+                    } else {
+                        await ctx.reply("❌ رقم غير صالح.", { reply_markup: mainKeyboard });
+                    }
                 }
-                currentAlerts.splice(index, 1);
-                await saveAlerts(currentAlerts);
-                await ctx.reply(`✅ تم حذف التنبيه.`);
-                return;
+                userStates.delete(userId);
+                break;
         }
+        return; // إنهاء التنفيذ لأن الرسالة تمت معالجتها كجزء من محادثة
     }
     
+    // --- 3. التعامل مع الأوامر والأزرار العادية ---
     switch (text) {
         case "📊 عرض المحفظة":
             const loadingMsgPortfolio = await ctx.reply("⏳ جاري إعداد التقرير...");
@@ -1423,18 +1545,36 @@ bot.on("message:text", async (ctx) => {
             await ctx.reply("اختر الفترة الزمنية لعرض تقرير الأداء:", { reply_markup: performanceKeyboard });
             break;
         case "ℹ️ معلومات عملة":
-            waitingState = 'coin_info';
-            await ctx.reply("✍️ يرجى إرسال رمز العملة (مثال: `BTC-USDT`).");
+            userStates.set(userId, { action: 'coin_info' });
+            await ctx.reply("✍️ يرجى إرسال رمز العملة (مثال: `BTC-USDT`).", { reply_markup: cancelKeyboard });
             break;
         case "⚙️ الإعدادات":
             await sendSettingsMenu(ctx);
             break;
-        case "🔔 ضبط تنبيه":
-            waitingState = 'set_alert';
-            await ctx.reply("✍️ *لضبط تنبيه سعر، استخدم الصيغة:*\n`BTC > 50000`", { parse_mode: "Markdown" });
+        case "➕ إضافة تنبيه سعر":
+            userStates.set(userId, { action: 'adding_price_alert_step_1' });
+            await ctx.reply("حسناً، لنقم بإضافة تنبيه سعر جديد.\n\nما هي العملة التي تريد مراقبتها؟ (مثال: BTC-USDT)", {
+                reply_markup: cancelKeyboard
+            });
+            break;
+        case "🔔 عرض تنبيهاتي":
+            const alerts = await getActiveTargetPriceAlerts(userId);
+            if (alerts.length === 0) {
+                await ctx.reply("لا يوجد لديك أي تنبيهات سعر نشطة حالياً.", { reply_markup: mainKeyboard });
+            } else {
+                let message = "🔔 تنبيهاتك النشطة:\n\n";
+                alerts.forEach(alert => {
+                    const condition = alert.type === 'above' ? 'يتجاوز' : 'ينخفض عن';
+                    message += `🔸 \`${alert.instId}\` عندما ${condition} \`${alert.targetPrice}\`\n`;
+                });
+                await ctx.reply(message, { parse_mode: "Markdown", reply_markup: mainKeyboard });
+            }
             break;
         case "🧮 حاسبة الربح والخسارة":
             await ctx.reply("✍️ لحساب الربح/الخسارة، استخدم أمر `/pnl` بالصيغة التالية:\n`/pnl <سعر الشراء> <سعر البيع> <الكمية>`", {parse_mode: "Markdown"});
+            break;
+        default:
+            // If text does not match any button, do nothing or send a help message.
             break;
     }
 });
@@ -1454,7 +1594,8 @@ async function startBot() {
         // Schedule background jobs
         setInterval(monitorBalanceChanges, 60 * 1000);
         setInterval(trackPositionHighLow, 60 * 1000);
-        setInterval(checkPriceAlerts, 30 * 1000);
+        setInterval(checkPriceAlerts, 30 * 1000); // Old movement alert system
+        setInterval(checkTargetPriceAlerts, 30 * 1000); // New target price alert system
         setInterval(checkPriceMovements, 60 * 1000);
         setInterval(monitorVirtualTrades, 30 * 1000);
         setInterval(runHourlyJobs, 60 * 60 * 1000);
