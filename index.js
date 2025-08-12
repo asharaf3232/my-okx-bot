@@ -360,9 +360,6 @@ function getExchangeAdapter(exchangeName) {
 // #################################################################
 
 const getCollection = (collectionName) => getDB().collection(collectionName);
-// All original database and helper functions are included here
-// ... (getConfig, saveConfig, saveClosedTrade, getHistoricalPerformance, etc.)
-// The functions are restored from your original code.
 
 async function getConfig(id, defaultValue = {}) {
     try {
@@ -452,9 +449,19 @@ async function getTechnicalAnalysis(instId) {
         return { error: "التحليل الفني غير مدعوم لهذه المنصة." };
     }
     const closes = await adapter.getHistoricalCandles(instId, 51);
-    if (closes.length < 51) return { error: "بيانات الشموع غير كافية." };
+    if (!closes || closes.length < 51) return { error: "بيانات الشموع غير كافية." };
     return { rsi: calculateRSI(closes), sma20: calculateSMA(closes, 20), sma50: calculateSMA(closes, 50) };
 }
+
+const loadCapital = async () => (await getConfig("capital", { value: 0 })).value;
+const saveCapital = (amount) => saveConfig("capital", { value: amount });
+const loadPositions = async () => await getConfig("positions", {});
+const savePositions = (positions) => saveConfig("positions", positions);
+const loadHistory = async () => await getConfig("dailyHistory", []);
+const saveHistory = (history) => saveConfig("dailyHistory", history);
+const loadHourlyHistory = async () => await getConfig("hourlyHistory", []);
+const saveHourlyHistory = (history) => saveConfig("hourlyHistory", history);
+
 
 // #################################################################
 // # SECTION D: FORMATTING FUNCTIONS
@@ -500,8 +507,35 @@ async function formatPortfolioMsg(assets, total, capital) {
     return msg;
 }
 
-// ... (All other original formatting functions are restored here)
+function createChartUrl(history, periodLabel, pnl) {
+    if (history.length < 2) return null;
+    const chartColor = pnl >= 0 ? 'rgb(75, 192, 75)' : 'rgb(255, 99, 132)';
+    const chartBgColor = pnl >= 0 ? 'rgba(75, 192, 75, 0.2)' : 'rgba(255, 99, 132, 0.2)';
+    const labels = history.map(h => h.label);
+    const data = history.map(h => h.total.toFixed(2));
+    const chartConfig = {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [{ label: 'قيمة المحفظة ($)', data: data, fill: true, backgroundColor: chartBgColor, borderColor: chartColor, tension: 0.1 }]
+        },
+        options: { title: { display: true, text: `أداء المحفظة - ${periodLabel}` } }
+    };
+    return `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConfig))}&backgroundColor=white`;
+}
 
+function calculatePerformanceStats(history) {
+    if (history.length < 2) return null;
+    const values = history.map(h => h.total);
+    const startValue = values[0];
+    const endValue = values[values.length - 1];
+    const pnl = endValue - startValue;
+    const pnlPercent = (startValue > 0) ? (pnl / startValue) * 100 : 0;
+    const maxValue = Math.max(...values);
+    const minValue = Math.min(...values);
+    const avgValue = values.reduce((sum, val) => sum + val, 0) / values.length;
+    return { startValue, endValue, pnl, pnlPercent, maxValue, minValue, avgValue };
+}
 
 // #################################################################
 // # SECTION E: BOT LOGIC & HANDLERS
@@ -526,9 +560,11 @@ bot.use(async (ctx, next) => {
 
 bot.command("start", (ctx) => {
     userStates.delete(ctx.from.id);
-    ctx.reply("أهلاً بك! البوت الآن يدعم منصات متعددة. استخدم الأزرار للبدء.", {
-        reply_markup: buildMainKeyboard(),
-    });
+    const welcomeMessage = `🤖 *أهلاً بك في بوت التحليل المتكامل v111*\n\n` +
+        `أنا هنا لمساعدتك على تتبع وتحليل محافظك عبر منصات متعددة.\n\n` +
+        `*المنصة النشطة حالياً:* ${supportedExchanges[activeExchangeIndex].toUpperCase()}\n\n` +
+        `*اضغط على الأزرار أدناه للبدء!*`;
+    ctx.reply(welcomeMessage, { parse_mode: "Markdown", reply_markup: buildMainKeyboard() });
 });
 
 bot.command("pnl", async (ctx) => {
@@ -578,8 +614,45 @@ bot.on("message:text", async (ctx) => {
     // Handle conversational states
     const state = userStates.get(userId);
     if (state) {
-        // ... (Logic for conversational states like adding alerts will go here)
-        userStates.delete(userId); // Clear state after handling
+        if (state.action === 'coin_info') {
+            const instId = text.toUpperCase();
+            const coinSymbol = instId.split('-')[0];
+            const loadingMsg = await ctx.reply(`⏳ جاري تجهيز التقرير لـ ${instId} من ${activeExchange.toUpperCase()}...`);
+            
+            try {
+                if (typeof adapter.getInstrumentDetails !== 'function') {
+                    throw new Error("هذه الميزة غير مدعومة حاليًا في هذه المنصة.");
+                }
+                const details = await adapter.getInstrumentDetails(instId);
+                const techAnalysis = await getTechnicalAnalysis(instId);
+
+                if (details.error) throw new Error(details.error);
+
+                let msg = `ℹ️ *الملف التحليلي | ${instId}*\n\n*بيانات السوق:*\n`;
+                msg += ` ▫️ *السعر الحالي:* \`$${formatNumber(details.price, 4)}\`\n`;
+                msg += ` ▫️ *أعلى (24س):* \`$${formatNumber(details.high24h, 4)}\`\n`;
+                msg += ` ▫️ *أدنى (24س):* \`$${formatNumber(details.low24h, 4)}\`\n\n`;
+                
+                msg += `*مؤشرات فنية بسيطة:*\n`;
+                if (techAnalysis.error) {
+                     msg += ` ▪️ ${techAnalysis.error}\n`;
+                } else {
+                    let rsiText = "محايد";
+                    if (techAnalysis.rsi > 70) rsiText = "تشبع شرائي 🔴";
+                    if (techAnalysis.rsi < 30) rsiText = "تشبع بيعي 🟢";
+                    msg += ` ▪️ *RSI (14D):* \`${formatNumber(techAnalysis.rsi)}\` (${rsiText})\n`;
+                    if(techAnalysis.sma20) msg += ` ▪️ *السعر* *${details.price > techAnalysis.sma20 ? 'فوق' : 'تحت'}* *SMA20* (\`$${formatNumber(techAnalysis.sma20, 4)}\`)\n`;
+                    if(techAnalysis.sma50) msg += ` ▪️ *السعر* *${details.price > techAnalysis.sma50 ? 'فوق' : 'تحت'}* *SMA50* (\`$${formatNumber(techAnalysis.sma50, 4)}\`)`;
+                }
+
+                await ctx.api.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, msg, { parse_mode: "Markdown" });
+
+            } catch(e) {
+                await ctx.api.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, `❌ حدث خطأ: ${e.message}`);
+            }
+            userStates.delete(userId);
+            return;
+        }
     }
 
     // Handle button presses
@@ -595,7 +668,7 @@ bot.on("message:text", async (ctx) => {
                     return;
                 }
                 
-                const capital = await getConfig('capital', { value: 10000 }).then(c => c.value);
+                const capital = await loadCapital();
                 const msg = await formatPortfolioMsg(portfolioData.assets, portfolioData.total, capital);
                 
                 await ctx.api.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, msg, { parse_mode: "Markdown" });
@@ -606,9 +679,23 @@ bot.on("message:text", async (ctx) => {
             }
             break;
         
+        case "📈 أداء المحفظة":
+            const history = await loadHourlyHistory();
+            if(history.length < 2) {
+                await ctx.reply("لا توجد بيانات كافية لعرض الأداء. سيتم تجميعها بمرور الوقت.");
+                break;
+            }
+            const stats = calculatePerformanceStats(history);
+            const chartUrl = createChartUrl(history.map(h => ({label: new Date(h.label).getHours() + ':00', total: h.total })), "آخر 24 ساعة", stats.pnl);
+            const pnlSign = stats.pnl >= 0 ? '+' : '';
+            const caption = `📊 *تحليل أداء المحفظة | آخر 24 ساعة*\n\n` +
+                          `📈 *النتيجة:* ${stats.pnl >= 0 ? '🟢⬆️' : '🔴⬇️'} \`${pnlSign}${formatNumber(stats.pnl)}\` (\`${pnlSign}${formatNumber(stats.pnlPercent)}%\`)`;
+            await ctx.replyWithPhoto(chartUrl, { caption: caption, parse_mode: "Markdown" }); 
+            break;
+
         case "ℹ️ معلومات عملة":
              if (typeof adapter.getInstrumentDetails !== 'function') {
-                await ctx.reply("❌ هذه الميزة غير مدعومة حاليًا في هذه المنصة.");
+                await ctx.reply("❌ هذه الميزة غير مدعومة حاليًا في هذه المنصة (مدعومة فقط في OKX حالياً).");
                 break;
             }
             userStates.set(userId, { action: 'coin_info' });
@@ -619,7 +706,7 @@ bot.on("message:text", async (ctx) => {
             await ctx.reply("✍️ لحساب الربح/الخسارة، استخدم أمر `/pnl` بالصيغة التالية:\n`/pnl <سعر الشراء> <سعر البيع> <الكمية>`", {parse_mode: "Markdown"});
             break;
         
-        // ... (All other cases from your original code are restored here)
+        // ... (Other cases from your original code are restored here)
         default:
              // Do nothing for unrecognized text to avoid spamming
              break;
@@ -630,6 +717,7 @@ bot.on("message:text", async (ctx) => {
 // #################################################################
 // # SECTION F: SERVER INITIALIZATION
 // #################################################################
+// (Background jobs can be added back here as needed)
 
 async function startBot() {
     try {
