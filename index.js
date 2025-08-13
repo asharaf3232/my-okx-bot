@@ -1,4 +1,4 @@
-// =================================================================
+صوت// =================================================================
 // OKX Advanced Analytics Bot - v113 (Gate.io Adapter Implemented)
 // =================================================================
 
@@ -191,7 +191,7 @@ class KuCoinAdapter {
     async getBalanceForComparison() { return null; }
 }
 
-// --- Gate.io Adapter (Newly Implemented) ---
+// --- Gate.io Adapter (CORRECTED with integer timestamp) ---
 class GateIoAdapter {
     constructor() {
         this.name = "Gate.io";
@@ -201,7 +201,8 @@ class GateIoAdapter {
     getHeaders(method, path, queryParams = '', body = '') {
         const apiKey = process.env.GATEIO_API_KEY;
         const apiSecret = process.env.GATEIO_API_SECRET_KEY;
-        const timestamp = (Date.now() / 1000).toString();
+        // THE FIX IS HERE: Ensure the timestamp is a string of an integer.
+        const timestamp = Math.floor(Date.now() / 1000).toString();
         const bodyHash = crypto.createHash('sha512').update(body).digest('hex');
         const signatureString = `${method}\n${path}\n${queryParams}\n${bodyHash}\n${timestamp}`;
         const signature = crypto.createHmac('sha512', apiSecret).update(signatureString).digest('hex');
