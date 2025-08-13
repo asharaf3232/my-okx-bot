@@ -95,8 +95,7 @@ class OKXAdapter {
 
     async getBalanceForComparison() { /* ... This function is OKX-specific for now ... */ return null; }
 }
-
-// --- KuCoin Adapter (Newly Implemented) ---
+// --- KuCoin Adapter (Corrected Version with Encryption) ---
 class KuCoinAdapter {
     constructor() {
         this.name = "KuCoin";
@@ -105,15 +104,24 @@ class KuCoinAdapter {
 
     getHeaders(method, endpoint, body = null) {
         const timestamp = Date.now().toString();
+        const apiSecret = process.env.KUCOIN_API_SECRET_KEY;
+        const passphrase = process.env.KUCOIN_API_PASSPHRASE;
+        const apiKey = process.env.KUCOIN_API_KEY;
+
         const bodyString = body ? JSON.stringify(body) : "";
         const strForSign = timestamp + method.toUpperCase() + endpoint + bodyString;
-        const signature = crypto.createHmac("sha256", process.env.KUCOIN_API_SECRET_KEY).update(strForSign).digest("base64");
+
+        // 1. Signature for the request itself
+        const signature = crypto.createHmac("sha256", apiSecret).update(strForSign).digest("base64");
+
+        // 2. Encrypt the passphrase as required by KuCoin V2 API (THE FIX IS HERE)
+        const encryptedPassphrase = crypto.createHmac("sha256", apiSecret).update(passphrase).digest("base64");
 
         return {
-            "KC-API-KEY": process.env.KUCOIN_API_KEY,
+            "KC-API-KEY": apiKey,
             "KC-API-SIGN": signature,
             "KC-API-TIMESTAMP": timestamp,
-            "KC-API-PASSPHRASE": process.env.KUCOIN_API_PASSPHRASE,
+            "KC-API-PASSPHRASE": encryptedPassphrase, // Use the encrypted passphrase
             "KC-API-KEY-VERSION": "2",
             "Content-Type": "application/json",
         };
@@ -126,7 +134,7 @@ class KuCoinAdapter {
             const json = await res.json();
             if (json.code !== '200000' || !json.data.ticker) {
                 console.error("Failed to fetch market prices (KuCoin Error):", json.msg);
-                return null;
+                return { error: `فشل جلب أسعار السوق من KuCoin: ${json.msg}` };
             }
             const prices = {};
             json.data.ticker.forEach(t => {
@@ -141,7 +149,7 @@ class KuCoinAdapter {
             return prices;
         } catch (error) {
             console.error("Exception in KuCoinAdapter.getMarketPrices:", error.message);
-            return null;
+            return { error: "خطأ استثنائي عند جلب أسعار KuCoin." };
         }
     }
     
@@ -153,6 +161,8 @@ class KuCoinAdapter {
             const json = await res.json();
 
             if (json.code !== '200000' || !json.data) {
+                // Log the actual error from KuCoin for better debugging
+                console.error("KuCoin Portfolio Error:", json);
                 return { error: `فشل جلب المحفظة من KuCoin: ${json.msg || 'بيانات غير متوقعة'}` };
             }
 
@@ -186,11 +196,11 @@ class KuCoinAdapter {
             return { assets, total, usdtValue };
         } catch (e) {
             console.error("Exception in KuCoinAdapter.getPortfolio:", e.message);
-            return { error: "خطأ في الاتصال بمنصة KuCoin." };
+            return { error: "خطأ استثنائي في الاتصال بمنصة KuCoin." };
         }
     }
     
-    async getBalanceForComparison() { /* ... This is complex and OKX-specific for now ... */ return null; }
+    async getBalanceForComparison() { /* This is an advanced feature for OKX only for now */ return null; }
 }
 
 
