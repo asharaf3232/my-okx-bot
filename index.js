@@ -1,5 +1,5 @@
 // =================================================================
-// Advanced Analytics Bot - v123 (Portfolio Table View)
+// Advanced Analytics Bot - v124 (Syntax Fix)
 // =================================================================
 
 const express = require("express");
@@ -134,7 +134,7 @@ async function sendDebugMessage(message) { const settings = await loadSettings()
 // =================================================================
 // SECTION 2: DATA PROCESSING FUNCTIONS
 // =================================================================
-async function getInstrumentDetails(instId) { try { const tickerRes = await fetch(`${okxAdapter.baseURL}/api/v5/market/ticker?instId=${instId.toUpperCase()}`); const tickerJson = await tickerRes.json(); if (tickerJson.code !== '0' || !tickerJson.data[0]) return { error: `لم يتم العثور على العملة.` }; const tickerData = tickerJson.data[0]; return { price: parseFloat(tickerData.last), high24h: parseFloat(tickerData.high24h), low24h: parseFloat(tickerData.low24h), vol24h: parseFloat(tickerData.volCcy24h), }; } catch (e) { return { error: "خطأ في الاتصال بالمنصة." }; } }
+async function getInstrumentDetails(instId) { try { const tickerRes = await fetch(`${okxAdapter.baseURL}/api/v5/market/ticker?instId=${instId.toUpperCase()}`); const tickerJson = await tickersRes.json(); if (tickerJson.code !== '0' || !tickerJson.data[0]) return { error: `لم يتم العثور على العملة.` }; const tickerData = tickerJson.data[0]; return { price: parseFloat(tickerData.last), high24h: parseFloat(tickerData.high24h), low24h: parseFloat(tickerData.low24h), vol24h: parseFloat(tickerData.volCcy24h), }; } catch (e) { return { error: "خطأ في الاتصال بالمنصة." }; } }
 async function getHistoricalCandles(instId, bar = '1D', limit = 100) { try { const res = await fetch(`${okxAdapter.baseURL}/api/v5/market/history-candles?instId=${instId}&bar=${bar}&limit=${limit}`); const json = await res.json(); if (json.code !== '0' || !json.data || json.data.length === 0) return []; return json.data.map(c => ({ time: parseInt(c[0]), close: parseFloat(c[4]) })).reverse(); } catch (e) { return []; } }
 function calculateSMA(closes, period) { if (closes.length < period) return null; const sum = closes.slice(-period).reduce((acc, val) => acc + val, 0); return sum / period; }
 function calculateRSI(closes, period = 14) { if (closes.length < period + 1) return null; let gains = 0, losses = 0; for (let i = 1; i <= period; i++) { const diff = closes[i] - closes[i - 1]; diff > 0 ? gains += diff : losses -= diff; } let avgGain = gains / period, avgLoss = losses / period; for (let i = period + 1; i < closes.length; i++) { const diff = closes[i] - closes[i - 1]; if (diff > 0) { avgGain = (avgGain * (period - 1) + diff) / period; avgLoss = (avgLoss * (period - 1)) / period; } else { avgLoss = (avgLoss * (period - 1) - diff) / period; avgGain = (avgGain * (period - 1)) / period; } } if (avgLoss === 0) return 100; const rs = avgGain / avgLoss; return 100 - (100 / (1 + rs)); }
@@ -204,21 +204,23 @@ async function formatPortfolioMsg(assets, total, capital) {
     caption += ` ▫️ *مؤشر المخاطرة:* ${riskLevel}\n`;
     caption += `━━━━━━━━━━━━━━━━━━━━\n*توزيع الأصول:*\n`;
 
-    let table = "| الأصل | القيمة | الوزن | الربح/خسارة |\n|:---|---:|---:|---:|\n";
+    let table = "```
+    table += "الأصل    | القيمة      | الوزن   | الربح/خسارة\n";
+    table += "----------|-------------|---------|-------------\n";
     assets.filter(a => a.asset !== "USDT").forEach(a => {
         const percent = total > 0 ? (a.value / total) * 100 : 0;
         const concentrationWarning = percent > 40 ? '⚠️' : '';
-        let pnlCell = '`غير مسجل`';
+        let pnlCell = 'غير مسجل';
         const position = positions[a.asset];
         if (position?.avgBuyPrice > 0) {
             const totalCost = position.avgBuyPrice * a.amount;
             const assetPnlPercent = totalCost > 0 ? ((a.value - totalCost) / totalCost) * 100 : 0;
-            const assetPnlEmoji = assetPnlPercent >= 0 ? '🟢' : '🔴';
             const assetPnlSign = assetPnlPercent >= 0 ? '+' : '';
-            pnlCell = `${assetPnlEmoji} \`${assetPnlSign}${formatNumber(assetPnlPercent)}%\``;
+            pnlCell = `${assetPnlSign}${formatNumber(assetPnlPercent, 1)}%`;
         }
-        table += `| ${a.asset} ${concentrationWarning} | \`$${formatNumber(a.value)}\` | \`${formatNumber(percent)}%\` | ${pnlCell} |\n`;
+        table += `${a.asset.padEnd(9)} | ${`$${formatNumber(a.value, 0)}`.padEnd(11)} | ${`${formatNumber(percent)}%`.padEnd(7)} | ${pnlCell.padEnd(10)}\n`;
     });
+    table += "```";
     caption += table;
     caption += `\n💵 *السيولة النقدية (USDT):* \`$${formatNumber(usdtAsset.value)}\` (\`${formatNumber(cashPercent)}%\`)`;
     
@@ -332,7 +334,39 @@ async function monitorVirtualTrades() { const activeTrades = await getActiveVirt
 // =================================================================
 // SECTION 4.5: DAILY & CUMULATIVE REPORTING
 // =================================================================
-async function formatDailyCopyReport() { const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000); const closedTrades = await getCollection("tradeHistory").find({ closedAt: { $gte: twentyFourHoursAgo } }).toArray(); if (closedTrades.length === 0) { return "📊 لم يتم إغلاق أي صفقات في الـ 24 ساعة الماضية."; } const today = new Date(); const dateString = `${today.getDate().toString().padStart(2, '0')}/${(today.getMonth() + 1).toString().padStart(2, '0')}/${today.getFullYear()}`; let report = `📊 تقرير النسخ اليومي – خلال الـ24 ساعة الماضية\n🗓 التاريخ: ${dateString}\n\n`; let totalPnlWeightedSum = 0; let totalWeight = 0; for (const trade of closedTrades) { if (trade.pnlPercent === undefined || trade.entryCapitalPercent === undefined) continue; const resultEmoji = trade.pnlPercent >= 0 ? '🔼' : '🔽'; report += `🔸اسم العملة: ${trade.asset}\n`; report += `🔸 نسبة الدخول من رأس المال: ${formatNumber(trade.entryCapitalPercent)}%\n`; report += `🔸 متوسط سعر الشراء: ${formatNumber(trade.avgBuyPrice, 4)}\n`; report += `🔸 سعر الخروج: ${formatNumber(trade.avgSellPrice, 4)}\`\n`; report += `🔸 نسبة الخروج من الكمية: ${formatNumber(trade.exitQuantityPercent)}%\n`; report += `🔸 النتيجة: ${trade.pnlPercent >= 0 ? '+' : ''}${formatNumber(trade.pnlPercent)}% ${resultEmoji}\n\n`; if (trade.entryCapitalPercent > 0) { totalPnlWeightedSum += trade.pnlPercent * trade.entryCapitalPercent; totalWeight += trade.entryCapitalPercent; } } const totalPnl = totalWeight > 0 ? totalPnlWeightedSum / totalWeight : 0; const totalPnlEmoji = totalPnl >= 0 ? '📈' : '📉'; report += `إجمالي الربح الحالي خدمة النسخ: ${totalPnl >= 0 ? '+' : ''}${formatNumber(totalPnl, 2)}% ${totalPnlEmoji}\n\n`; report += `✍️ يمكنك الدخول في اي وقت تراه مناسب، الخدمة مفتوحة للجميع\n\n`; report += `📢 قناة التحديثات الرسمية:\n@RahhalVIP\n\n`; report += `🌐 رابط النسخ المباشر:\n🏦 https://www.binance.info/copy-trading/lead-details/456346669905472870`; return report; }
+async function formatDailyCopyReport() {
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const closedTrades = await getCollection("tradeHistory").find({ closedAt: { $gte: twentyFourHoursAgo } }).toArray();
+    if (closedTrades.length === 0) {
+        return "📊 لم يتم إغلاق أي صفقات في الـ 24 ساعة الماضية.";
+    }
+    const today = new Date();
+    const dateString = `${today.getDate().toString().padStart(2, '0')}/${(today.getMonth() + 1).toString().padStart(2, '0')}/${today.getFullYear()}`;
+    let report = `📊 تقرير النسخ اليومي – خلال الـ24 ساعة الماضية\n🗓 التاريخ: ${dateString}\n\n`;
+    let totalPnlWeightedSum = 0;
+    let totalWeight = 0;
+    for (const trade of closedTrades) {
+        if (trade.pnlPercent === undefined || trade.entryCapitalPercent === undefined) continue;
+        const resultEmoji = trade.pnlPercent >= 0 ? '🔼' : '🔽';
+        report += `🔸اسم العملة: ${trade.asset}\n`;
+        report += `🔸 نسبة الدخول من رأس المال: ${formatNumber(trade.entryCapitalPercent)}%\n`;
+        report += `🔸 متوسط سعر الشراء: ${formatNumber(trade.avgBuyPrice, 4)}\n`;
+        report += `🔸 سعر الخروج: ${formatNumber(trade.avgSellPrice, 4)}\n`;
+        report += `🔸 نسبة الخروج من الكمية: ${formatNumber(trade.exitQuantityPercent)}%\n`;
+        report += `🔸 النتيجة: ${trade.pnlPercent >= 0 ? '+' : ''}${formatNumber(trade.pnlPercent)}% ${resultEmoji}\n\n`;
+        if (trade.entryCapitalPercent > 0) {
+            totalPnlWeightedSum += trade.pnlPercent * trade.entryCapitalPercent;
+            totalWeight += trade.entryCapitalPercent;
+        }
+    }
+    const totalPnl = totalWeight > 0 ? totalPnlWeightedSum / totalWeight : 0;
+    const totalPnlEmoji = totalPnl >= 0 ? '📈' : '📉';
+    report += `إجمالي الربح الحالي خدمة النسخ: ${totalPnl >= 0 ? '+' : ''}${formatNumber(totalPnl, 2)}% ${totalPnlEmoji}\n\n`;
+    report += `✍️ يمكنك الدخول في اي وقت تراه مناسب، الخدمة مفتوحة للجميع\n\n`;
+    report += `📢 قناة التحديثات الرسمية:\n@RahhalVIP\n\n`;
+    report += `🌐 رابط النسخ المباشر:\n🏦 https://www.binance.info/copy-trading/lead-details/456346669905472870`;
+    return report;
+}
 async function runDailyReportJob() { try { await sendDebugMessage("Running daily copy-trading report job..."); const report = await formatDailyCopyReport(); if (report.startsWith("📊 لم يتم إغلاق أي صفقات")) { await bot.api.sendMessage(AUTHORIZED_USER_ID, report); } else { await bot.api.sendMessage(process.env.TARGET_CHANNEL_ID, report); await bot.api.sendMessage(AUTHORIZED_USER_ID, "✅ تم إرسال تقرير النسخ اليومي إلى القناة بنجاح."); } } catch(e) { console.error("Error in runDailyReportJob:", e); await bot.api.sendMessage(AUTHORIZED_USER_ID, `❌ حدث خطأ أثناء إنشاء تقرير النسخ اليومي: ${e.message}`); } }
 async function generateAndSendCumulativeReport(ctx, asset) { try { const trades = await getCollection("tradeHistory").find({ asset: asset }).toArray(); if (trades.length === 0) { await ctx.reply(`ℹ️ لا يوجد سجل صفقات مغلقة لعملة *${asset}*.`, { parse_mode: "Markdown" }); return; } const totalPnl = trades.reduce((sum, trade) => sum + (trade.pnl || 0), 0); const totalRoi = trades.reduce((sum, trade) => sum + (trade.pnlPercent || 0), 0); const avgRoi = totalRoi / trades.length; const winningTrades = trades.filter(t => (t.pnl || 0) > 0).length; const winRate = (winningTrades / trades.length) * 100; const bestTrade = trades.reduce((max, trade) => (trade.pnlPercent || 0) > (max.pnlPercent || 0) ? trade : max, trades[0]); const worstTrade = trades.reduce((min, trade) => (trade.pnlPercent || 0) < (min.pnlPercent || 0) ? trade : min, trades[0]); const impactSign = totalPnl >= 0 ? '+' : ''; const impactEmoji = totalPnl >= 0 ? '🟢' : '🔴'; const winRateEmoji = winRate >= 50 ? '✅' : '⚠️'; let report = `*تحليل الأثر التراكمي | ${asset}* 🔬\n\n`; report += `*الخلاصة الاستراتيجية:*\n`; report += `تداولاتك في *${asset}* أضافت ما قيمته \`${impactSign}$${formatNumber(totalPnl)}\` ${impactEmoji} إلى محفظتك بشكل تراكمي.\n\n`; report += `*ملخص الأداء التاريخي:*\n`; report += ` ▪️ *إجمالي الصفقات:* \`${trades.length}\`\n`; report += ` ▪️ *معدل النجاح (Win Rate):* \`${formatNumber(winRate)}%\` ${winRateEmoji}\n`; report += ` ▪️ *متوسط العائد (ROI):* \`${formatNumber(avgRoi)}%\`\n\n`; report += `*أبرز الصفقات:*\n`; report += ` 🏆 *أفضل صفقة:* ربح بنسبة \`${formatNumber(bestTrade.pnlPercent)}%\`\n`; report += ` 💔 *أسوأ صفقة:* ${worstTrade.pnlPercent < 0 ? 'خسارة' : 'ربح'} بنسبة \`${formatNumber(worstTrade.pnlPercent)}%\`\n\n`; report += `*توصية استراتيجية خاصة:*\n`; if (avgRoi > 5 && winRate > 60) { report += `أداء *${asset}* يتفوق على المتوسط بشكل واضح. قد تفكر في زيادة حجم صفقاتك المستقبلية فيها.`; } else if (totalPnl < 0) { report += `أداء *${asset}* سلبي. قد ترغب في مراجعة استراتيجيتك لهذه العملة أو تقليل المخاطرة فيها.`; } else { report += `أداء *${asset}* يعتبر ضمن النطاق المقبول. استمر في المراقبة والتحليل.`; } await ctx.reply(report, { parse_mode: "Markdown" }); } catch(e) { console.error(`Error generating cumulative report for ${asset}:`, e); await ctx.reply("❌ حدث خطأ أثناء إنشاء التقرير."); } }
 
@@ -445,40 +479,4 @@ bot.on("message:text", async (ctx) => { const text = ctx.message.text.trim(); if
                 await ctx.api.editMessageText(loadingMsgPortfolio.chat.id, loadingMsgPortfolio.message_id, caption, { parse_mode: "Markdown" });
             } catch (e) {
                 console.error("Error in 'عرض المحفظة':", e);
-                await ctx.api.editMessageText(loadingMsgPortfolio.chat.id, loadingMsgPortfolio.message_id, `❌ حدث خطأ: ${e.message}`);
-            }
-            break;
-        case "🚀 تحليل السوق":
-            const loadingMsgMarket = await ctx.reply("⏳ جاري تحليل السوق...");
-            try {
-                const prices = await okxAdapter.getMarketPrices();
-                if (!prices || prices.error) throw new Error(prices.error || `فشل جلب أسعار السوق.`);
-                const { assets, error } = await okxAdapter.getPortfolio(prices);
-                if (error) throw new Error(error);
-                const marketMsg = await formatAdvancedMarketAnalysis(assets);
-                await ctx.api.editMessageText(loadingMsgMarket.chat.id, loadingMsgMarket.message_id, marketMsg, { parse_mode: "Markdown" });
-            } catch (e) {
-                console.error("Error in 'تحليل السوق':", e);
-                await ctx.api.editMessageText(loadingMsgMarket.chat.id, loadingMsgMarket.message_id, `❌ حدث خطأ أثناء تحليل السوق: ${e.message}`);
-            }
-            break;
-        case "💡 توصية افتراضية": await ctx.reply("اختر الإجراء المطلوب للتوصيات الافتراضية:", { reply_markup: virtualTradeKeyboard }); break;
-        case "⚡ إحصائيات سريعة": const loadingMsgQuick = await ctx.reply("⏳ جاري حساب الإحصائيات..."); try { const prices = await okxAdapter.getMarketPrices(); if (!prices || prices.error) throw new Error(prices.error || `فشل جلب أسعار السوق.`); const capital = await loadCapital(); const { assets, total, error } = await okxAdapter.getPortfolio(prices); if (error) throw new Error(error); const quickStatsMsg = await formatQuickStats(assets, total, capital); await ctx.api.editMessageText(loadingMsgQuick.chat.id, loadingMsgQuick.message_id, quickStatsMsg, { parse_mode: "Markdown" }); } catch (e) { console.error("Error in 'إحصائيات سريعة':", e); await ctx.api.editMessageText(loadingMsgQuick.chat.id, loadingMsgQuick.message_id, `❌ حدث خطأ: ${e.message}`); } break;
-        case "📈 أداء المحفظة": const performanceKeyboard = new InlineKeyboard().text("آخر 24 ساعة", "chart_24h").text("آخر 7 أيام", "chart_7d").row().text("آخر 30 يومًا", "chart_30d"); await ctx.reply("اختر الفترة الزمنية لعرض تقرير الأداء:", { reply_markup: performanceKeyboard }); break;
-        case "📈 تحليل تراكمي": waitingState = 'cumulative_analysis_asset'; await ctx.reply("✍️ يرجى إرسال رمز العملة التي تود تحليلها (مثال: `BTC`)."); break;
-        case "ℹ️ معلومات عملة": waitingState = 'coin_info'; await ctx.reply("✍️ يرجى إرسال رمز العملة (مثال: `BTC-USDT`)."); break;
-        case "⚙️ الإعدادات": await sendSettingsMenu(ctx); break;
-        case "🔔 ضبط تنبيه": waitingState = 'set_alert'; await ctx.reply("✍️ *لضبط تنبيه سعر، استخدم الصيغة:*\n`BTC > 50000`", { parse_mode: "Markdown" }); break;
-        case "🧮 حاسبة الربح والخسارة": await ctx.reply("✍️ لحساب الربح/الخسارة، استخدم أمر `/pnl` بالصيغة التالية:\n`/pnl <سعر الشراء> <سعر البيع> <الكمية>`", {parse_mode: "Markdown"}); break;
-    }
-});
-
-// =================================================================
-// SECTION 6: SERVER AND BOT INITIALIZATION
-// =================================================================
-app.get("/healthcheck", (req, res) => res.status(200).send("OK"));
-async function startBot() {
-    try {
-        await connectDB();
-        console.log("MongoDB connected.");
-        if (process.
+                await ctx.api.editMessageText(loadingMsgPortfolio.chat.id, loadingMsgPortfolio.
