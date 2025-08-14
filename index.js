@@ -1,5 +1,5 @@
 // =================================================================
-// Advanced Analytics Bot - v121 (Benchmark Performance & UI Arrows)
+// Advanced Analytics Bot - v122 (Chart Formatting Fix)
 // =================================================================
 
 const express = require("express");
@@ -134,7 +134,7 @@ async function sendDebugMessage(message) { const settings = await loadSettings()
 // =================================================================
 // SECTION 2: DATA PROCESSING FUNCTIONS
 // =================================================================
-async function getInstrumentDetails(instId) { try { const tickerRes = await fetch(`${okxAdapter.baseURL}/api/v5/market/ticker?instId=${instId.toUpperCase()}`); const tickerJson = await tickersRes.json(); if (tickerJson.code !== '0' || !tickerJson.data[0]) return { error: `لم يتم العثور على العملة.` }; const tickerData = tickerJson.data[0]; return { price: parseFloat(tickerData.last), high24h: parseFloat(tickerData.high24h), low24h: parseFloat(tickerData.low24h), vol24h: parseFloat(tickerData.volCcy24h), }; } catch (e) { return { error: "خطأ في الاتصال بالمنصة." }; } }
+async function getInstrumentDetails(instId) { try { const tickerRes = await fetch(`${okxAdapter.baseURL}/api/v5/market/ticker?instId=${instId.toUpperCase()}`); const tickerJson = await tickerRes.json(); if (tickerJson.code !== '0' || !tickerJson.data[0]) return { error: `لم يتم العثور على العملة.` }; const tickerData = tickerJson.data[0]; return { price: parseFloat(tickerData.last), high24h: parseFloat(tickerData.high24h), low24h: parseFloat(tickerData.low24h), vol24h: parseFloat(tickerData.volCcy24h), }; } catch (e) { return { error: "خطأ في الاتصال بالمنصة." }; } }
 async function getHistoricalCandles(instId, bar = '1D', limit = 100) { try { const res = await fetch(`${okxAdapter.baseURL}/api/v5/market/history-candles?instId=${instId}&bar=${bar}&limit=${limit}`); const json = await res.json(); if (json.code !== '0' || !json.data || json.data.length === 0) return []; return json.data.map(c => ({ time: parseInt(c[0]), close: parseFloat(c[4]) })).reverse(); } catch (e) { return []; } }
 function calculateSMA(closes, period) { if (closes.length < period) return null; const sum = closes.slice(-period).reduce((acc, val) => acc + val, 0); return sum / period; }
 function calculateRSI(closes, period = 14) { if (closes.length < period + 1) return null; let gains = 0, losses = 0; for (let i = 1; i <= period; i++) { const diff = closes[i] - closes[i - 1]; diff > 0 ? gains += diff : losses -= diff; } let avgGain = gains / period, avgLoss = losses / period; for (let i = period + 1; i < closes.length; i++) { const diff = closes[i] - closes[i - 1]; if (diff > 0) { avgGain = (avgGain * (period - 1) + diff) / period; avgLoss = (avgLoss * (period - 1)) / period; } else { avgLoss = (avgLoss * (period - 1) - diff) / period; avgGain = (avgGain * (period - 1)) / period; } } if (avgLoss === 0) return 100; const rs = avgGain / avgLoss; return 100 - (100 / (1 + rs)); }
@@ -153,7 +153,24 @@ function createChartUrl(data, type = 'line', title = '', labels = [], dataLabel 
             options: {
                 title: { display: true, text: title, fontColor: 'black', fontSize: 16 },
                 legend: { position: 'right', labels: { fontColor: 'black', fontSize: 12 } },
-                plugins: { datalabels: { color: 'white', font: { weight: 'bold' }, formatter: (value) => `${Math.round(value)}%` } }
+                plugins: {
+                    datalabels: {
+                        display: true,
+                        color: 'white',
+                        anchor: 'center',
+                        align: 'center',
+                        font: {
+                            weight: 'bold',
+                            size: 14
+                        },
+                        formatter: (value, context) => {
+                            if (value < 3) {
+                                return '';
+                            }
+                            return value.toFixed(1) + '%';
+                        }
+                    }
+                }
             }
         };
     } else { // line chart
