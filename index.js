@@ -1,5 +1,5 @@
 // =================================================================
-// Advanced Analytics Bot - v125 (Stability Fix)
+// Advanced Analytics Bot - v126 (Return to Card View)
 // =================================================================
 
 const express = require("express");
@@ -134,7 +134,7 @@ async function sendDebugMessage(message) { const settings = await loadSettings()
 // =================================================================
 // SECTION 2: DATA PROCESSING FUNCTIONS
 // =================================================================
-async function getInstrumentDetails(instId) { try { const tickerRes = await fetch(`${okxAdapter.baseURL}/api/v5/market/ticker?instId=${instId.toUpperCase()}`); const tickerJson = await tickersRes.json(); if (tickerJson.code !== '0' || !tickerJson.data[0]) return { error: `لم يتم العثور على العملة.` }; const tickerData = tickerJson.data[0]; return { price: parseFloat(tickerData.last), high24h: parseFloat(tickerData.high24h), low24h: parseFloat(tickerData.low24h), vol24h: parseFloat(tickerData.volCcy24h), }; } catch (e) { return { error: "خطأ في الاتصال بالمنصة." }; } }
+async function getInstrumentDetails(instId) { try { const tickerRes = await fetch(`${okxAdapter.baseURL}/api/v5/market/ticker?instId=${instId.toUpperCase()}`); const tickerJson = await tickerRes.json(); if (tickerJson.code !== '0' || !tickerJson.data[0]) return { error: `لم يتم العثور على العملة.` }; const tickerData = tickerJson.data[0]; return { price: parseFloat(tickerData.last), high24h: parseFloat(tickerData.high24h), low24h: parseFloat(tickerData.low24h), vol24h: parseFloat(tickerData.volCcy24h), }; } catch (e) { return { error: "خطأ في الاتصال بالمنصة." }; } }
 async function getHistoricalCandles(instId, bar = '1D', limit = 100) { try { const res = await fetch(`${okxAdapter.baseURL}/api/v5/market/history-candles?instId=${instId}&bar=${bar}&limit=${limit}`); const json = await res.json(); if (json.code !== '0' || !json.data || json.data.length === 0) return []; return json.data.map(c => ({ time: parseInt(c[0]), close: parseFloat(c[4]) })).reverse(); } catch (e) { return []; } }
 function calculateSMA(closes, period) { if (closes.length < period) return null; const sum = closes.slice(-period).reduce((acc, val) => acc + val, 0); return sum / period; }
 function calculateRSI(closes, period = 14) { if (closes.length < period + 1) return null; let gains = 0, losses = 0; for (let i = 1; i <= period; i++) { const diff = closes[i] - closes[i - 1]; diff > 0 ? gains += diff : losses -= diff; } let avgGain = gains / period, avgLoss = losses / period; for (let i = period + 1; i < closes.length; i++) { const diff = closes[i] - closes[i - 1]; if (diff > 0) { avgGain = (avgGain * (period - 1) + diff) / period; avgLoss = (avgLoss * (period - 1)) / period; } else { avgLoss = (avgLoss * (period - 1) - diff) / period; avgGain = (avgGain * (period - 1)) / period; } } if (avgLoss === 0) return 100; const rs = avgGain / avgLoss; return 100 - (100 / (1 + rs)); }
@@ -202,25 +202,33 @@ async function formatPortfolioMsg(assets, total, capital) {
     caption += ` ▫️ *الربح غير المحقق:* ${pnlEmoji} \`$${pnlSign}${formatNumber(pnl)}\` (\`${pnlSign}${formatNumber(pnlPercent)}%\`)\n`;
     caption += ` ▫️ *الأداء اليومي (24س):*${dailyPnlText}\n`;
     caption += ` ▫️ *مؤشر المخاطرة:* ${riskLevel}\n`;
-    caption += `━━━━━━━━━━━━━━━━━━━━\n*توزيع الأصول:*\n`;
+    caption += `━━━━━━━━━━━━━━━━━━━━\n*مكونات المحفظة:*\n`;
+    
+    assets.forEach(a => {
+        if (a.asset === "USDT") {
+            // We will add USDT info at the end
+        } else {
+            const percent = total > 0 ? (a.value / total) * 100 : 0;
+            const concentrationWarning = percent > 40 ? '⚠️' : '';
+            caption += `\n╭─ *${a.asset}* ${concentrationWarning}\n`;
+            caption += `├─ *القيمة:* \`$${formatNumber(a.value)}\` (*الوزن:* \`${formatNumber(percent)}%\`)\n`;
 
-    let table = "| الأصل | القيمة | الوزن | الربح/خسارة |\n|:---|---:|---:|---:|\n";
-    assets.filter(a => a.asset !== "USDT").forEach(a => {
-        const percent = total > 0 ? (a.value / total) * 100 : 0;
-        const concentrationWarning = percent > 40 ? '⚠️' : '';
-        let pnlCell = '`غير مسجل`';
-        const position = positions[a.asset];
-        if (position?.avgBuyPrice > 0) {
-            const totalCost = position.avgBuyPrice * a.amount;
-            const assetPnlPercent = totalCost > 0 ? ((a.value - totalCost) / totalCost) * 100 : 0;
-            const assetPnlEmoji = assetPnlPercent >= 0 ? '🟢' : '🔴';
-            const assetPnlSign = assetPnlPercent >= 0 ? '+' : '';
-            pnlCell = `${assetPnlEmoji} \`${assetPnlSign}${formatNumber(assetPnlPercent)}%\``;
+            const position = positions[a.asset];
+            if (position?.avgBuyPrice > 0) {
+                const totalCost = position.avgBuyPrice * a.amount;
+                const assetPnl = a.value - totalCost;
+                const assetPnlPercent = totalCost > 0 ? (assetPnl / totalCost) * 100 : 0;
+                const assetPnlEmoji = assetPnl >= 0 ? '🟢' : '🔴';
+                const assetPnlSign = assetPnl >= 0 ? '+' : '';
+                caption += `╰─ *ربح/خسارة:* ${assetPnlEmoji} \`${assetPnlSign}${formatNumber(assetPnlPercent)}%\` (\`$${assetPnlSign}${formatNumber(assetPnl)}\`)`;
+            } else {
+                caption += `╰─ *متوسط الشراء:* \`غير مسجل\``;
+            }
         }
-        table += `| ${a.asset} ${concentrationWarning} | \`$${formatNumber(a.value)}\` | \`${formatNumber(percent)}%\` | ${pnlCell} |\n`;
     });
-    caption += table;
-    caption += `\n💵 *السيولة النقدية (USDT):* \`$${formatNumber(usdtAsset.value)}\` (\`${formatNumber(cashPercent)}%\`)`;
+
+    caption += `\n\n━━━━━━━━━━━━━━━━━━━━\n`;
+    caption += `💵 *السيولة النقدية (USDT):* \`$${formatNumber(usdtAsset.value)}\` (*الوزن:* \`${formatNumber(cashPercent)}%\`)`;
     
     return { caption };
 }
