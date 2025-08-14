@@ -1,5 +1,5 @@
 // =================================================================
-// Advanced Analytics Bot - v128 (Final Stability Fix)
+// Advanced Analytics Bot - v129 (Professional Report Design)
 // =================================================================
 
 const express = require("express");
@@ -169,11 +169,7 @@ async function formatPortfolioMsg(assets, total, capital) {
     const positions = await loadPositions();
     const usdtAsset = assets.find(a => a.asset === "USDT") || { value: 0 };
     const cashPercent = total > 0 ? (usdtAsset.value / total) * 100 : 0;
-    const maxAssetWeight = Math.max(...assets.filter(a => a.asset !== "USDT").map(a => total > 0 ? (a.value / total) * 100 : 0), 0);
-    
-    let riskLevel = "منخفض 🟢";
-    if (cashPercent < 10 || maxAssetWeight > 50) riskLevel = "مرتفع 🔴";
-    else if (cashPercent < 25 || maxAssetWeight > 40) riskLevel = "متوسط 🟠";
+    const investedPercent = 100 - cashPercent;
 
     const pnl = capital > 0 ? total - capital : 0;
     const pnlPercent = capital > 0 ? (pnl / capital) * 100 : 0;
@@ -187,6 +183,7 @@ async function formatPortfolioMsg(assets, total, capital) {
         else if (asset.change24h !== undefined && asset.price > 0) totalValue24hAgo += asset.amount * (asset.price / (1 + asset.change24h));
         else totalValue24hAgo += asset.value;
     });
+
     if (totalValue24hAgo > 0) {
         const dailyPnl = total - totalValue24hAgo;
         const dailyPnlPercent = (dailyPnl / totalValue24hAgo) * 100;
@@ -199,19 +196,23 @@ async function formatPortfolioMsg(assets, total, capital) {
     caption += `*بتاريخ: ${new Date().toLocaleString("ar-EG", { timeZone: "Africa/Cairo" })}*\n`;
     caption += `━━━━━━━━━━━━━━━━━━━\n*نظرة عامة على الأداء:*\n`;
     caption += ` ▫️ *القيمة الإجمالية:* \`$${formatNumber(total)}\`\n`;
-    caption += ` ▫️ *الربح غير المحقق:* ${pnlEmoji} \`$${pnlSign}${formatNumber(pnl)}\` (\`${pnlSign}${formatNumber(pnlPercent)}%\`)\n`;
+    if (capital > 0) {
+        caption += ` ▫️ *رأس المال:* \`$${formatNumber(capital)}\`\n`;
+    }
+    caption += ` ▫️ *إجمالي الربح غير المحقق:* ${pnlEmoji} \`$${pnlSign}${formatNumber(pnl)}\` (\`${pnlSign}${formatNumber(pnlPercent)}%\`)\n`;
     caption += ` ▫️ *الأداء اليومي (24س):*${dailyPnlText}\n`;
-    caption += ` ▫️ *مؤشر المخاطرة:* ${riskLevel}\n`;
+    caption += ` ▫️ *السيولة:* 💵 نقدي ${formatNumber(cashPercent)}% / 📈 مستثمر ${formatNumber(investedPercent)}%\n`;
     caption += `━━━━━━━━━━━━━━━━━━━━\n*مكونات المحفظة:*\n`;
 
-    assets.filter(a => a.asset !== "USDT").forEach(a => {
+    const cryptoAssets = assets.filter(a => a.asset !== "USDT");
+    cryptoAssets.forEach((a, index) => {
         const percent = total > 0 ? (a.value / total) * 100 : 0;
-        const concentrationWarning = percent > 40 ? '⚠️' : '';
         const position = positions[a.asset];
 
-        caption += `\n╭─ *${a.asset}/USDT* ${concentrationWarning}\n`;
-        caption += `├─ *القيمة:* \`$${formatNumber(a.value)}\` (*الوزن:* \`${formatNumber(percent)}%\`)\n`;
-
+        caption += `\n╭─ *${a.asset}/USDT*\n`;
+        caption += `├─ *القيمة الحالية:* \`$${formatNumber(a.value)}\` (*الوزن:* \`${formatNumber(percent)}%\`)\n`;
+        caption += `├─ *سعر السوق:* \`$${formatNumber(a.price, 4)}\`\n`;
+        
         const dailyChangeEmoji = a.change24h >= 0 ? '🟢⬆️' : '🔴⬇️';
         caption += `├─ *الأداء اليومي:* ${dailyChangeEmoji} \`${formatNumber(a.change24h * 100)}%\`\n`;
 
@@ -229,10 +230,14 @@ async function formatPortfolioMsg(assets, total, capital) {
         } else {
             caption += `╰─ *ربح/خسارة غير محقق:* \`غير مسجل\``;
         }
+
+        if (index < cryptoAssets.length - 1) {
+            caption += `\n━━━━━━━━━━━━━━━━━━━━`;
+        }
     });
 
-    caption += `\n\n*USDT (السيولة النقدية)* 💵\n`;
-    caption += `└─ *القيمة:* \`$${formatNumber(usdtAsset.value)}\` (*الوزن:* \`${formatNumber(cashPercent)}%\`)`;
+    caption += `\n\n━━━━━━━━━━━━━━━━━━━━\n*USDT (الرصيد النقدي)* 💵\n`;
+    caption += `*القيمة:* \`$${formatNumber(usdtAsset.value)}\` (*الوزن:* \`${formatNumber(cashPercent)}%\`)`;
     
     return { caption };
 }
@@ -361,7 +366,7 @@ async function formatDailyCopyReport() {
         report += `🔸اسم العملة: ${trade.asset}\n`;
         report += `🔸 نسبة الدخول من رأس المال: ${formatNumber(trade.entryCapitalPercent)}%\n`;
         report += `🔸 متوسط سعر الشراء: ${formatNumber(trade.avgBuyPrice, 4)}\n`;
-        report += `🔸 سعر الخروج: ${formatNumber(trade.avgSellPrice, 4)}\n`;
+        report += `🔸 سعر الخروج: ${formatNumber(trade.avgSellPrice, 4)}\`\n`;
         report += `🔸 نسبة الخروج من الكمية: ${formatNumber(trade.exitQuantityPercent)}%\n`;
         report += `🔸 النتيجة: ${trade.pnlPercent >= 0 ? '+' : ''}${formatNumber(trade.pnlPercent)}% ${resultEmoji}\n\n`;
         if (trade.entryCapitalPercent > 0) {
