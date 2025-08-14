@@ -1,5 +1,5 @@
 // =================================================================
-// Advanced Analytics Bot - v124 (Syntax Fix)
+// Advanced Analytics Bot - v125 (Stability Fix)
 // =================================================================
 
 const express = require("express");
@@ -204,23 +204,21 @@ async function formatPortfolioMsg(assets, total, capital) {
     caption += ` ▫️ *مؤشر المخاطرة:* ${riskLevel}\n`;
     caption += `━━━━━━━━━━━━━━━━━━━━\n*توزيع الأصول:*\n`;
 
-    let table = "```
-    table += "الأصل    | القيمة      | الوزن   | الربح/خسارة\n";
-    table += "----------|-------------|---------|-------------\n";
+    let table = "| الأصل | القيمة | الوزن | الربح/خسارة |\n|:---|---:|---:|---:|\n";
     assets.filter(a => a.asset !== "USDT").forEach(a => {
         const percent = total > 0 ? (a.value / total) * 100 : 0;
         const concentrationWarning = percent > 40 ? '⚠️' : '';
-        let pnlCell = 'غير مسجل';
+        let pnlCell = '`غير مسجل`';
         const position = positions[a.asset];
         if (position?.avgBuyPrice > 0) {
             const totalCost = position.avgBuyPrice * a.amount;
             const assetPnlPercent = totalCost > 0 ? ((a.value - totalCost) / totalCost) * 100 : 0;
+            const assetPnlEmoji = assetPnlPercent >= 0 ? '🟢' : '🔴';
             const assetPnlSign = assetPnlPercent >= 0 ? '+' : '';
-            pnlCell = `${assetPnlSign}${formatNumber(assetPnlPercent, 1)}%`;
+            pnlCell = `${assetPnlEmoji} \`${assetPnlSign}${formatNumber(assetPnlPercent)}%\``;
         }
-        table += `${a.asset.padEnd(9)} | ${`$${formatNumber(a.value, 0)}`.padEnd(11)} | ${`${formatNumber(percent)}%`.padEnd(7)} | ${pnlCell.padEnd(10)}\n`;
+        table += `| ${a.asset} ${concentrationWarning} | \`$${formatNumber(a.value)}\` | \`${formatNumber(percent)}%\` | ${pnlCell} |\n`;
     });
-    table += "```";
     caption += table;
     caption += `\n💵 *السيولة النقدية (USDT):* \`$${formatNumber(usdtAsset.value)}\` (\`${formatNumber(cashPercent)}%\`)`;
     
@@ -479,4 +477,73 @@ bot.on("message:text", async (ctx) => { const text = ctx.message.text.trim(); if
                 await ctx.api.editMessageText(loadingMsgPortfolio.chat.id, loadingMsgPortfolio.message_id, caption, { parse_mode: "Markdown" });
             } catch (e) {
                 console.error("Error in 'عرض المحفظة':", e);
-                await ctx.api.editMessageText(loadingMsgPortfolio.chat.id, loadingMsgPortfolio.
+                await ctx.api.editMessageText(loadingMsgPortfolio.chat.id, loadingMsgPortfolio.message_id, `❌ حدث خطأ: ${e.message}`);
+            }
+            break;
+        case "🚀 تحليل السوق":
+            const loadingMsgMarket = await ctx.reply("⏳ جاري تحليل السوق...");
+            try {
+                const prices = await okxAdapter.getMarketPrices();
+                if (!prices || prices.error) throw new Error(prices.error || `فشل جلب أسعار السوق.`);
+                const { assets, error } = await okxAdapter.getPortfolio(prices);
+                if (error) throw new Error(error);
+                const marketMsg = await formatAdvancedMarketAnalysis(assets);
+                await ctx.api.editMessageText(loadingMsgMarket.chat.id, loadingMsgMarket.message_id, marketMsg, { parse_mode: "Markdown" });
+            } catch (e) {
+                console.error("Error in 'تحليل السوق':", e);
+                await ctx.api.editMessageText(loadingMsgMarket.chat.id, loadingMsgMarket.message_id, `❌ حدث خطأ أثناء تحليل السوق: ${e.message}`);
+            }
+            break;
+        case "💡 توصية افتراضية": await ctx.reply("اختر الإجراء المطلوب للتوصيات الافتراضية:", { reply_markup: virtualTradeKeyboard }); break;
+        case "⚡ إحصائيات سريعة": const loadingMsgQuick = await ctx.reply("⏳ جاري حساب الإحصائيات..."); try { const prices = await okxAdapter.getMarketPrices(); if (!prices || prices.error) throw new Error(prices.error || `فشل جلب أسعار السوق.`); const capital = await loadCapital(); const { assets, total, error } = await okxAdapter.getPortfolio(prices); if (error) throw new Error(error); const quickStatsMsg = await formatQuickStats(assets, total, capital); await ctx.api.editMessageText(loadingMsgQuick.chat.id, loadingMsgQuick.message_id, quickStatsMsg, { parse_mode: "Markdown" }); } catch (e) { console.error("Error in 'إحصائيات سريعة':", e); await ctx.api.editMessageText(loadingMsgQuick.chat.id, loadingMsgQuick.message_id, `❌ حدث خطأ: ${e.message}`); } break;
+        case "📈 أداء المحفظة": const performanceKeyboard = new InlineKeyboard().text("آخر 24 ساعة", "chart_24h").text("آخر 7 أيام", "chart_7d").row().text("آخر 30 يومًا", "chart_30d"); await ctx.reply("اختر الفترة الزمنية لعرض تقرير الأداء:", { reply_markup: performanceKeyboard }); break;
+        case "📈 تحليل تراكمي": waitingState = 'cumulative_analysis_asset'; await ctx.reply("✍️ يرجى إرسال رمز العملة التي تود تحليلها (مثال: `BTC`)."); break;
+        case "ℹ️ معلومات عملة": waitingState = 'coin_info'; await ctx.reply("✍️ يرجى إرسال رمز العملة (مثال: `BTC-USDT`)."); break;
+        case "⚙️ الإعدادات": await sendSettingsMenu(ctx); break;
+        case "🔔 ضبط تنبيه": waitingState = 'set_alert'; await ctx.reply("✍️ *لضبط تنبيه سعر، استخدم الصيغة:*\n`BTC > 50000`", { parse_mode: "Markdown" }); break;
+        case "🧮 حاسبة الربح والخسارة": await ctx.reply("✍️ لحساب الربح/الخسارة، استخدم أمر `/pnl` بالصيغة التالية:\n`/pnl <سعر الشراء> <سعر البيع> <الكمية>`", {parse_mode: "Markdown"}); break;
+    }
+});
+
+// =================================================================
+// SECTION 6: SERVER AND BOT INITIALIZATION
+// =================================================================
+app.get("/healthcheck", (req, res) => res.status(200).send("OK"));
+async function startBot() {
+    try {
+        await connectDB();
+        console.log("MongoDB connected.");
+        if (process.env.NODE_ENV === "production") {
+            app.use(express.json());
+            app.use(webhookCallback(bot, "express"));
+            app.listen(PORT, () => { console.log(`Bot server is running on port ${PORT}`); });
+        } else {
+            console.log("Bot starting with polling...");
+            await bot.start();
+        }
+        console.log("Bot is now fully operational for OKX.");
+
+        // Start all background jobs
+        console.log("Starting OKX background jobs...");
+        setInterval(monitorBalanceChanges, 60 * 1000);
+        setInterval(trackPositionHighLow, 60 * 1000);
+        setInterval(checkPriceAlerts, 30 * 1000);
+        setInterval(checkPriceMovements, 60 * 1000);
+        setInterval(monitorVirtualTrades, 30 * 1000);
+        setInterval(runHourlyJobs, 60 * 60 * 1000);
+        setInterval(runDailyJobs, 24 * 60 * 60 * 1000);
+        setInterval(runDailyReportJob, 24 * 60 * 60 * 1000);
+        
+        // Run initial jobs once on startup
+        await runHourlyJobs();
+        await runDailyJobs();
+        await monitorBalanceChanges();
+        await bot.api.sendMessage(AUTHORIZED_USER_ID, "✅ تم تفعيل المراقبة المتقدمة لمنصة OKX.").catch(console.error);
+
+    } catch (e) {
+        console.error("FATAL: Could not start the bot.", e);
+        process.exit(1);
+    }
+}
+
+startBot();
