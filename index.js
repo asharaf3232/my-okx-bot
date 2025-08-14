@@ -275,8 +275,8 @@ async function formatDailyCopyReport() {
 
     report += `إجمالي الربح الحالي خدمة النسخ: ${totalPnl >= 0 ? '+' : ''}${formatNumber(totalPnl, 2)}% ${totalPnlEmoji}\n\n`;
     report += `✍️ يمكنك الدخول في اي وقت تراه مناسب، الخدمة مفتوحة للجميع\n\n`;
-    report += `📢 قناة التحديثات الرسمية:\n@RahhalVIP\n\n`;
-    report += `🌐 رابط النسخ المباشر:\n🏦 https://www.binance.info/copy-trading/lead-details/456346669905472870`;
+    report += `📢 قناة التحديثات الرسمية:\n@abusalamachart\n\n`;
+    report += `🌐 رابط النسخ المباشر:\n🏦 https://t.me/abusalamachart/10965`;
 
     return report;
 }
