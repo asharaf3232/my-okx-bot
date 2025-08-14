@@ -1,5 +1,5 @@
 // =================================================================
-// Advanced Analytics Bot - v122 (Chart Formatting Fix)
+// Advanced Analytics Bot - v123 (Portfolio Table View)
 // =================================================================
 
 const express = require("express");
@@ -142,50 +142,17 @@ async function getTechnicalAnalysis(instId) { const closes = (await getHistorica
 function calculatePerformanceStats(history) { if (history.length < 2) return null; const values = history.map(h => h.total); const startValue = values[0]; const endValue = values[values.length - 1]; const pnl = endValue - startValue; const pnlPercent = (startValue > 0) ? (pnl / startValue) * 100 : 0; const maxValue = Math.max(...values); const minValue = Math.min(...values); const avgValue = values.reduce((sum, val) => sum + val, 0) / values.length; const dailyReturns = []; for (let i = 1; i < values.length; i++) { dailyReturns.push((values[i] - values[i - 1]) / values[i - 1]); } const bestDayChange = Math.max(...dailyReturns) * 100; const worstDayChange = Math.min(...dailyReturns) * 100; const avgReturn = dailyReturns.reduce((sum, ret) => sum + ret, 0) / dailyReturns.length; const volatility = Math.sqrt(dailyReturns.map(x => Math.pow(x - avgReturn, 2)).reduce((a, b) => a + b) / dailyReturns.length) * 100; let volText = "متوسط"; if(volatility < 1) volText = "منخفض"; if(volatility > 5) volText = "مرتفع"; return { startValue, endValue, pnl, pnlPercent, maxValue, minValue, avgValue, bestDayChange, worstDayChange, volatility, volText }; }
 function createChartUrl(data, type = 'line', title = '', labels = [], dataLabel = '') {
     if (data.length === 0) return null;
-    let chartConfig;
-    if (type === 'pie') {
-        chartConfig = {
-            type: 'pie',
-            data: {
-                labels: labels,
-                datasets: [{ data: data, backgroundColor: ['#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF', '#FF9F40'] }]
-            },
-            options: {
-                title: { display: true, text: title, fontColor: 'black', fontSize: 16 },
-                legend: { position: 'right', labels: { fontColor: 'black', fontSize: 12 } },
-                plugins: {
-                    datalabels: {
-                        display: true,
-                        color: 'white',
-                        anchor: 'center',
-                        align: 'center',
-                        font: {
-                            weight: 'bold',
-                            size: 14
-                        },
-                        formatter: (value, context) => {
-                            if (value < 3) {
-                                return '';
-                            }
-                            return value.toFixed(1) + '%';
-                        }
-                    }
-                }
-            }
-        };
-    } else { // line chart
-        const pnl = data[data.length - 1] - data[0];
-        const chartColor = pnl >= 0 ? 'rgb(75, 192, 75)' : 'rgb(255, 99, 132)';
-        const chartBgColor = pnl >= 0 ? 'rgba(75, 192, 75, 0.2)' : 'rgba(255, 99, 132, 0.2)';
-        chartConfig = {
-            type: 'line',
-            data: {
-                labels: labels,
-                datasets: [{ label: dataLabel, data: data, fill: true, backgroundColor: chartBgColor, borderColor: chartColor, tension: 0.1 }]
-            },
-            options: { title: { display: true, text: title } }
-        };
-    }
+    const pnl = data[data.length - 1] - data[0];
+    const chartColor = pnl >= 0 ? 'rgb(75, 192, 75)' : 'rgb(255, 99, 132)';
+    const chartBgColor = pnl >= 0 ? 'rgba(75, 192, 75, 0.2)' : 'rgba(255, 99, 132, 0.2)';
+    const chartConfig = {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [{ label: dataLabel, data: data, fill: true, backgroundColor: chartBgColor, borderColor: chartColor, tension: 0.1 }]
+        },
+        options: { title: { display: true, text: title } }
+    };
     return `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConfig))}&backgroundColor=white`;
 }
 
@@ -228,10 +195,6 @@ async function formatPortfolioMsg(assets, total, capital) {
         dailyPnlText = ` ${dailyEmoji} \`$${dailySign}${formatNumber(dailyPnl)}\` (\`${dailySign}${formatNumber(dailyPnlPercent)}%\`)`;
     }
 
-    const chartLabels = assets.map(a => a.asset);
-    const chartData = assets.map(a => total > 0 ? (a.value / total) * 100 : 0);
-    const pieChartUrl = createChartUrl(chartData, 'pie', 'توزيع الأصول', chartLabels);
-
     let caption = `🧾 *التقرير التحليلي للمحفظة*\n\n`;
     caption += `*بتاريخ: ${new Date().toLocaleString("ar-EG", { timeZone: "Africa/Cairo" })}*\n`;
     caption += `━━━━━━━━━━━━━━━━━━━\n*نظرة عامة على الأداء:*\n`;
@@ -239,38 +202,27 @@ async function formatPortfolioMsg(assets, total, capital) {
     caption += ` ▫️ *الربح غير المحقق:* ${pnlEmoji} \`$${pnlSign}${formatNumber(pnl)}\` (\`${pnlSign}${formatNumber(pnlPercent)}%\`)\n`;
     caption += ` ▫️ *الأداء اليومي (24س):*${dailyPnlText}\n`;
     caption += ` ▫️ *مؤشر المخاطرة:* ${riskLevel}\n`;
-    caption += `━━━━━━━━━━━━━━━━━━━━\n*مكونات المحفظة:*\n`;
-    assets.forEach(a => {
+    caption += `━━━━━━━━━━━━━━━━━━━━\n*توزيع الأصول:*\n`;
+
+    let table = "| الأصل | القيمة | الوزن | الربح/خسارة |\n|:---|---:|---:|---:|\n";
+    assets.filter(a => a.asset !== "USDT").forEach(a => {
         const percent = total > 0 ? (a.value / total) * 100 : 0;
-        if (a.asset === "USDT") {
-            caption += `\n*USDT (السيولة النقدية) 💵*\n`;
-            caption += `└─ *القيمة:* \`$${formatNumber(a.value)}\` (*الوزن:* \`${formatNumber(percent)}%\`)`;
-        } else {
-            const concentrationWarning = percent > 40 ? '⚠️' : '';
-            const change24hPercent = (a.change24h || 0) * 100;
-            const changeEmoji = change24hPercent >= 0 ? '🟢⬆️' : '🔴⬇️';
-            const changeSign = change24hPercent >= 0 ? '+' : '';
-
-            caption += `\n╭─ *${a.asset}/USDT* ${concentrationWarning}\n`;
-            caption += `├─ *القيمة:* \`$${formatNumber(a.value)}\` (*الوزن:* \`${formatNumber(percent)}%\`)\n`;
-            caption += `├─ *الأداء اليومي:* ${changeEmoji} \`${changeSign}${formatNumber(change24hPercent)}%\`\n`;
-
-            const position = positions[a.asset];
-            if (position?.avgBuyPrice > 0) {
-                const totalCost = position.avgBuyPrice * a.amount;
-                const assetPnl = a.value - totalCost;
-                const assetPnlPercent = totalCost > 0 ? (assetPnl / totalCost) * 100 : 0;
-                const assetPnlEmoji = assetPnl >= 0 ? '🟢⬆️' : '🔴⬇️';
-                const assetPnlSign = assetPnl >= 0 ? '+' : '';
-                caption += `├─ *متوسط الشراء:* \`$${formatNumber(position.avgBuyPrice, 4)}\`\n`;
-                caption += `╰─ *ربح/خسارة غير محقق:* ${assetPnlEmoji} \`$${assetPnlSign}${formatNumber(assetPnl)}\` (\`${assetPnlSign}${formatNumber(assetPnlPercent)}%\`)`;
-            } else {
-                caption += `╰─ *متوسط الشراء:* \`غير مسجل\``;
-            }
+        const concentrationWarning = percent > 40 ? '⚠️' : '';
+        let pnlCell = '`غير مسجل`';
+        const position = positions[a.asset];
+        if (position?.avgBuyPrice > 0) {
+            const totalCost = position.avgBuyPrice * a.amount;
+            const assetPnlPercent = totalCost > 0 ? ((a.value - totalCost) / totalCost) * 100 : 0;
+            const assetPnlEmoji = assetPnlPercent >= 0 ? '🟢' : '🔴';
+            const assetPnlSign = assetPnlPercent >= 0 ? '+' : '';
+            pnlCell = `${assetPnlEmoji} \`${assetPnlSign}${formatNumber(assetPnlPercent)}%\``;
         }
-        caption += `\n`;
+        table += `| ${a.asset} ${concentrationWarning} | \`$${formatNumber(a.value)}\` | \`${formatNumber(percent)}%\` | ${pnlCell} |\n`;
     });
-    return { caption, chartUrl: pieChartUrl };
+    caption += table;
+    caption += `\n💵 *السيولة النقدية (USDT):* \`$${formatNumber(usdtAsset.value)}\` (\`${formatNumber(cashPercent)}%\`)`;
+    
+    return { caption };
 }
 async function formatAdvancedMarketAnalysis(ownedAssets = []) {
     const prices = await okxAdapter.getMarketPrices();
@@ -380,7 +332,7 @@ async function monitorVirtualTrades() { const activeTrades = await getActiveVirt
 // =================================================================
 // SECTION 4.5: DAILY & CUMULATIVE REPORTING
 // =================================================================
-async function formatDailyCopyReport() { const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000); const closedTrades = await getCollection("tradeHistory").find({ closedAt: { $gte: twentyFourHoursAgo } }).toArray(); if (closedTrades.length === 0) { return "📊 لم يتم إغلاق أي صفقات في الـ 24 ساعة الماضية."; } const today = new Date(); const dateString = `${today.getDate().toString().padStart(2, '0')}/${(today.getMonth() + 1).toString().padStart(2, '0')}/${today.getFullYear()}`; let report = `📊 تقرير النسخ اليومي – خلال الـ24 ساعة الماضية\n🗓 التاريخ: ${dateString}\n\n`; let totalPnlWeightedSum = 0; let totalWeight = 0; for (const trade of closedTrades) { if (trade.pnlPercent === undefined || trade.entryCapitalPercent === undefined) continue; const resultEmoji = trade.pnlPercent >= 0 ? '🔼' : '🔽'; report += `🔸اسم العملة: ${trade.asset}\n`; report += `🔸 نسبة الدخول من رأس المال: ${formatNumber(trade.entryCapitalPercent)}%\n`; report += `🔸 متوسط سعر الشراء: ${formatNumber(trade.avgBuyPrice, 4)}\n`; report += `🔸 سعر الخروج: ${formatNumber(trade.avgSellPrice, 4)}\n`; report += `🔸 نسبة الخروج من الكمية: ${formatNumber(trade.exitQuantityPercent)}%\n`; report += `🔸 النتيجة: ${trade.pnlPercent >= 0 ? '+' : ''}${formatNumber(trade.pnlPercent)}% ${resultEmoji}\n\n`; if (trade.entryCapitalPercent > 0) { totalPnlWeightedSum += trade.pnlPercent * trade.entryCapitalPercent; totalWeight += trade.entryCapitalPercent; } } const totalPnl = totalWeight > 0 ? totalPnlWeightedSum / totalWeight : 0; const totalPnlEmoji = totalPnl >= 0 ? '📈' : '📉'; report += `إجمالي الربح الحالي خدمة النسخ: ${totalPnl >= 0 ? '+' : ''}${formatNumber(totalPnl, 2)}% ${totalPnlEmoji}\n\n`; report += `✍️ يمكنك الدخول في اي وقت تراه مناسب، الخدمة مفتوحة للجميع\n\n`; report += `📢 قناة التحديثات الرسمية:\n@RahhalVIP\n\n`; report += `🌐 رابط النسخ المباشر:\n🏦 https://www.binance.info/copy-trading/lead-details/456346669905472870`; return report; }
+async function formatDailyCopyReport() { const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000); const closedTrades = await getCollection("tradeHistory").find({ closedAt: { $gte: twentyFourHoursAgo } }).toArray(); if (closedTrades.length === 0) { return "📊 لم يتم إغلاق أي صفقات في الـ 24 ساعة الماضية."; } const today = new Date(); const dateString = `${today.getDate().toString().padStart(2, '0')}/${(today.getMonth() + 1).toString().padStart(2, '0')}/${today.getFullYear()}`; let report = `📊 تقرير النسخ اليومي – خلال الـ24 ساعة الماضية\n🗓 التاريخ: ${dateString}\n\n`; let totalPnlWeightedSum = 0; let totalWeight = 0; for (const trade of closedTrades) { if (trade.pnlPercent === undefined || trade.entryCapitalPercent === undefined) continue; const resultEmoji = trade.pnlPercent >= 0 ? '🔼' : '🔽'; report += `🔸اسم العملة: ${trade.asset}\n`; report += `🔸 نسبة الدخول من رأس المال: ${formatNumber(trade.entryCapitalPercent)}%\n`; report += `🔸 متوسط سعر الشراء: ${formatNumber(trade.avgBuyPrice, 4)}\n`; report += `🔸 سعر الخروج: ${formatNumber(trade.avgSellPrice, 4)}\`\n`; report += `🔸 نسبة الخروج من الكمية: ${formatNumber(trade.exitQuantityPercent)}%\n`; report += `🔸 النتيجة: ${trade.pnlPercent >= 0 ? '+' : ''}${formatNumber(trade.pnlPercent)}% ${resultEmoji}\n\n`; if (trade.entryCapitalPercent > 0) { totalPnlWeightedSum += trade.pnlPercent * trade.entryCapitalPercent; totalWeight += trade.entryCapitalPercent; } } const totalPnl = totalWeight > 0 ? totalPnlWeightedSum / totalWeight : 0; const totalPnlEmoji = totalPnl >= 0 ? '📈' : '📉'; report += `إجمالي الربح الحالي خدمة النسخ: ${totalPnl >= 0 ? '+' : ''}${formatNumber(totalPnl, 2)}% ${totalPnlEmoji}\n\n`; report += `✍️ يمكنك الدخول في اي وقت تراه مناسب، الخدمة مفتوحة للجميع\n\n`; report += `📢 قناة التحديثات الرسمية:\n@RahhalVIP\n\n`; report += `🌐 رابط النسخ المباشر:\n🏦 https://www.binance.info/copy-trading/lead-details/456346669905472870`; return report; }
 async function runDailyReportJob() { try { await sendDebugMessage("Running daily copy-trading report job..."); const report = await formatDailyCopyReport(); if (report.startsWith("📊 لم يتم إغلاق أي صفقات")) { await bot.api.sendMessage(AUTHORIZED_USER_ID, report); } else { await bot.api.sendMessage(process.env.TARGET_CHANNEL_ID, report); await bot.api.sendMessage(AUTHORIZED_USER_ID, "✅ تم إرسال تقرير النسخ اليومي إلى القناة بنجاح."); } } catch(e) { console.error("Error in runDailyReportJob:", e); await bot.api.sendMessage(AUTHORIZED_USER_ID, `❌ حدث خطأ أثناء إنشاء تقرير النسخ اليومي: ${e.message}`); } }
 async function generateAndSendCumulativeReport(ctx, asset) { try { const trades = await getCollection("tradeHistory").find({ asset: asset }).toArray(); if (trades.length === 0) { await ctx.reply(`ℹ️ لا يوجد سجل صفقات مغلقة لعملة *${asset}*.`, { parse_mode: "Markdown" }); return; } const totalPnl = trades.reduce((sum, trade) => sum + (trade.pnl || 0), 0); const totalRoi = trades.reduce((sum, trade) => sum + (trade.pnlPercent || 0), 0); const avgRoi = totalRoi / trades.length; const winningTrades = trades.filter(t => (t.pnl || 0) > 0).length; const winRate = (winningTrades / trades.length) * 100; const bestTrade = trades.reduce((max, trade) => (trade.pnlPercent || 0) > (max.pnlPercent || 0) ? trade : max, trades[0]); const worstTrade = trades.reduce((min, trade) => (trade.pnlPercent || 0) < (min.pnlPercent || 0) ? trade : min, trades[0]); const impactSign = totalPnl >= 0 ? '+' : ''; const impactEmoji = totalPnl >= 0 ? '🟢' : '🔴'; const winRateEmoji = winRate >= 50 ? '✅' : '⚠️'; let report = `*تحليل الأثر التراكمي | ${asset}* 🔬\n\n`; report += `*الخلاصة الاستراتيجية:*\n`; report += `تداولاتك في *${asset}* أضافت ما قيمته \`${impactSign}$${formatNumber(totalPnl)}\` ${impactEmoji} إلى محفظتك بشكل تراكمي.\n\n`; report += `*ملخص الأداء التاريخي:*\n`; report += ` ▪️ *إجمالي الصفقات:* \`${trades.length}\`\n`; report += ` ▪️ *معدل النجاح (Win Rate):* \`${formatNumber(winRate)}%\` ${winRateEmoji}\n`; report += ` ▪️ *متوسط العائد (ROI):* \`${formatNumber(avgRoi)}%\`\n\n`; report += `*أبرز الصفقات:*\n`; report += ` 🏆 *أفضل صفقة:* ربح بنسبة \`${formatNumber(bestTrade.pnlPercent)}%\`\n`; report += ` 💔 *أسوأ صفقة:* ${worstTrade.pnlPercent < 0 ? 'خسارة' : 'ربح'} بنسبة \`${formatNumber(worstTrade.pnlPercent)}%\`\n\n`; report += `*توصية استراتيجية خاصة:*\n`; if (avgRoi > 5 && winRate > 60) { report += `أداء *${asset}* يتفوق على المتوسط بشكل واضح. قد تفكر في زيادة حجم صفقاتك المستقبلية فيها.`; } else if (totalPnl < 0) { report += `أداء *${asset}* سلبي. قد ترغب في مراجعة استراتيجيتك لهذه العملة أو تقليل المخاطرة فيها.`; } else { report += `أداء *${asset}* يعتبر ضمن النطاق المقبول. استمر في المراقبة والتحليل.`; } await ctx.reply(report, { parse_mode: "Markdown" }); } catch(e) { console.error(`Error generating cumulative report for ${asset}:`, e); await ctx.reply("❌ حدث خطأ أثناء إنشاء التقرير."); } }
 
@@ -489,13 +441,8 @@ bot.on("message:text", async (ctx) => { const text = ctx.message.text.trim(); if
                 const capital = await loadCapital();
                 const { assets, total, error } = await okxAdapter.getPortfolio(prices);
                 if (error) throw new Error(error);
-                const { caption, chartUrl } = await formatPortfolioMsg(assets, total, capital);
-                if (chartUrl) {
-                    await ctx.replyWithPhoto(chartUrl, { caption: caption, parse_mode: "Markdown" });
-                    await ctx.api.deleteMessage(loadingMsgPortfolio.chat.id, loadingMsgPortfolio.message_id);
-                } else {
-                    await ctx.api.editMessageText(loadingMsgPortfolio.chat.id, loadingMsgPortfolio.message_id, caption, { parse_mode: "Markdown" });
-                }
+                const { caption } = await formatPortfolioMsg(assets, total, capital);
+                await ctx.api.editMessageText(loadingMsgPortfolio.chat.id, loadingMsgPortfolio.message_id, caption, { parse_mode: "Markdown" });
             } catch (e) {
                 console.error("Error in 'عرض المحفظة':", e);
                 await ctx.api.editMessageText(loadingMsgPortfolio.chat.id, loadingMsgPortfolio.message_id, `❌ حدث خطأ: ${e.message}`);
@@ -534,37 +481,4 @@ async function startBot() {
     try {
         await connectDB();
         console.log("MongoDB connected.");
-        if (process.env.NODE_ENV === "production") {
-            app.use(express.json());
-            app.use(webhookCallback(bot, "express"));
-            app.listen(PORT, () => { console.log(`Bot server is running on port ${PORT}`); });
-        } else {
-            console.log("Bot starting with polling...");
-            await bot.start();
-        }
-        console.log("Bot is now fully operational for OKX.");
-
-        // Start all background jobs
-        console.log("Starting OKX background jobs...");
-        setInterval(monitorBalanceChanges, 60 * 1000);
-        setInterval(trackPositionHighLow, 60 * 1000);
-        setInterval(checkPriceAlerts, 30 * 1000);
-        setInterval(checkPriceMovements, 60 * 1000);
-        setInterval(monitorVirtualTrades, 30 * 1000);
-        setInterval(runHourlyJobs, 60 * 60 * 1000);
-        setInterval(runDailyJobs, 24 * 60 * 60 * 1000);
-        setInterval(runDailyReportJob, 24 * 60 * 60 * 1000);
-        
-        // Run initial jobs once on startup
-        await runHourlyJobs();
-        await runDailyJobs();
-        await monitorBalanceChanges();
-        await bot.api.sendMessage(AUTHORIZED_USER_ID, "✅ تم تفعيل المراقبة المتقدمة لمنصة OKX.").catch(console.error);
-
-    } catch (e) {
-        console.error("FATAL: Could not start the bot.", e);
-        process.exit(1);
-    }
-}
-
-startBot();
+        if (process.
