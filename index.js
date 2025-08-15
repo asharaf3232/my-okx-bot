@@ -1,5 +1,5 @@
 // =================================================================
-// Advanced Analytics Bot - v134.1 (Robust Coin Info)
+// Advanced Analytics Bot - v135 (Advanced Calculator)
 // =================================================================
 
 const express = require("express");
@@ -17,6 +17,7 @@ const AUTHORIZED_USER_ID = parseInt(process.env.AUTHORIZED_USER_ID);
 
 // --- State Variables ---
 let waitingState = null;
+let tempData = {};
 
 // =================================================================
 // SECTION 0: OKX API ADAPTER
@@ -64,9 +65,9 @@ class OKXAdapter {
             const path = "/api/v5/account/balance";
             const res = await fetch(`${this.baseURL}${path}`, { headers: this.getHeaders("GET", path) });
             const json = await res.json();
-            if (json.code !== '0' || !json.data || !json.data[0] || !json.data[0].details) { return { error: `فشل جلب المحفظة: ${json.msg || 'بيانات غير متوقعة'}` }; }
+            if (json.code !== '0' || !json.data || !json.data || !json.data.details) { return { error: `فشل جلب المحفظة: ${json.msg || 'بيانات غير متوقعة'}` }; }
             let assets = [], total = 0, usdtValue = 0;
-            json.data[0].details.forEach(asset => {
+            json.data.details.forEach(asset => {
                 const amount = parseFloat(asset.eq);
                 if (amount > 0) {
                     const instId = `${asset.ccy}-USDT`;
@@ -87,9 +88,9 @@ class OKXAdapter {
             const path = "/api/v5/account/balance";
             const res = await fetch(`${this.baseURL}${path}`, { headers: this.getHeaders("GET", path) });
             const json = await res.json();
-            if (json.code !== '0' || !json.data || !json.data[0] || !json.data[0].details) { return null; }
+            if (json.code !== '0' || !json.data || !json.data || !json.data.details) { return null; }
             const balances = {};
-            json.data[0].details.forEach(asset => {
+            json.data.details.forEach(asset => {
                 const amount = parseFloat(asset.eq);
                 if (amount > 0) balances[asset.ccy] = amount;
             });
@@ -138,10 +139,10 @@ async function getInstrumentDetails(instId) {
     try {
         const tickerRes = await fetch(`${okxAdapter.baseURL}/api/v5/market/ticker?instId=${instId.toUpperCase()}`);
         const tickerJson = await tickerRes.json();
-        if (tickerJson.code !== '0' || !tickerJson.data[0]) {
+        if (tickerJson.code !== '0' || !tickerJson.data) {
             return { error: `لم يتم العثور على العملة.` };
         }
-        const tickerData = tickerJson.data[0];
+        const tickerData = tickerJson.data;
         return {
             price: parseFloat(tickerData.last),
             high24h: parseFloat(tickerData.high24h),
@@ -149,7 +150,6 @@ async function getInstrumentDetails(instId) {
             vol24h: parseFloat(tickerData.volCcy24h),
         };
     } catch (e) {
-        // This now throws an error to be caught by Promise.allSettled
         throw new Error("خطأ في الاتصال بالمنصة لجلب بيانات السوق.");
     }
 }
@@ -172,10 +172,10 @@ async function getHistoricalCandles(instId, bar = '1D', limit = 100) {
             }
 
             const newCandles = json.data.map(c => ({
-                time: parseInt(c[0]),
-                high: parseFloat(c[2]),
-                low: parseFloat(c[3]),
-                close: parseFloat(c[4])
+                time: parseInt(c),
+                high: parseFloat(c),
+                low: parseFloat(c),
+                close: parseFloat(c)
             }));
             
             allCandles.push(...newCandles);
@@ -236,10 +236,10 @@ async function getAssetPriceExtremes(instId) {
 function calculateSMA(closes, period) { if (closes.length < period) return null; const sum = closes.slice(-period).reduce((acc, val) => acc + val, 0); return sum / period; }
 function calculateRSI(closes, period = 14) { if (closes.length < period + 1) return null; let gains = 0, losses = 0; for (let i = 1; i <= period; i++) { const diff = closes[i] - closes[i - 1]; diff > 0 ? gains += diff : losses -= diff; } let avgGain = gains / period, avgLoss = losses / period; for (let i = period + 1; i < closes.length; i++) { const diff = closes[i] - closes[i - 1]; if (diff > 0) { avgGain = (avgGain * (period - 1) + diff) / period; avgLoss = (avgLoss * (period - 1)) / period; } else { avgLoss = (avgLoss * (period - 1) - diff) / period; avgGain = (avgGain * (period - 1)) / period; } } if (avgLoss === 0) return 100; const rs = avgGain / avgLoss; return 100 - (100 / (1 + rs)); }
 async function getTechnicalAnalysis(instId) { const candleData = (await getHistoricalCandles(instId, '1D', 51)); if (candleData.length < 51) return { error: "بيانات الشموع غير كافية." }; const closes = candleData.map(c => c.close); return { rsi: calculateRSI(closes), sma20: calculateSMA(closes, 20), sma50: calculateSMA(closes, 50) }; }
-function calculatePerformanceStats(history) { if (history.length < 2) return null; const values = history.map(h => h.total); const startValue = values[0]; const endValue = values[values.length - 1]; const pnl = endValue - startValue; const pnlPercent = (startValue > 0) ? (pnl / startValue) * 100 : 0; const maxValue = Math.max(...values); const minValue = Math.min(...values); const avgValue = values.reduce((sum, val) => sum + val, 0) / values.length; const dailyReturns = []; for (let i = 1; i < values.length; i++) { dailyReturns.push((values[i] - values[i - 1]) / values[i - 1]); } const bestDayChange = Math.max(...dailyReturns) * 100; const worstDayChange = Math.min(...dailyReturns) * 100; const avgReturn = dailyReturns.reduce((sum, ret) => sum + ret, 0) / dailyReturns.length; const volatility = Math.sqrt(dailyReturns.map(x => Math.pow(x - avgReturn, 2)).reduce((a, b) => a + b) / dailyReturns.length) * 100; let volText = "متوسط"; if(volatility < 1) volText = "منخفض"; if(volatility > 5) volText = "مرتفع"; return { startValue, endValue, pnl, pnlPercent, maxValue, minValue, avgValue, bestDayChange, worstDayChange, volatility, volText }; }
+function calculatePerformanceStats(history) { if (history.length < 2) return null; const values = history.map(h => h.total); const startValue = values; const endValue = values[values.length - 1]; const pnl = endValue - startValue; const pnlPercent = (startValue > 0) ? (pnl / startValue) * 100 : 0; const maxValue = Math.max(...values); const minValue = Math.min(...values); const avgValue = values.reduce((sum, val) => sum + val, 0) / values.length; const dailyReturns = []; for (let i = 1; i < values.length; i++) { dailyReturns.push((values[i] - values[i - 1]) / values[i - 1]); } const bestDayChange = Math.max(...dailyReturns) * 100; const worstDayChange = Math.min(...dailyReturns) * 100; const avgReturn = dailyReturns.reduce((sum, ret) => sum + ret, 0) / dailyReturns.length; const volatility = Math.sqrt(dailyReturns.map(x => Math.pow(x - avgReturn, 2)).reduce((a, b) => a + b) / dailyReturns.length) * 100; let volText = "متوسط"; if(volatility < 1) volText = "منخفض"; if(volatility > 5) volText = "مرتفع"; return { startValue, endValue, pnl, pnlPercent, maxValue, minValue, avgValue, bestDayChange, worstDayChange, volatility, volText }; }
 function createChartUrl(data, type = 'line', title = '', labels = [], dataLabel = '') {
     if (!data || data.length === 0) return null;
-    const pnl = data[data.length - 1] - data[0];
+    const pnl = data[data.length - 1] - data;
     const chartColor = pnl >= 0 ? 'rgb(75, 192, 75)' : 'rgb(255, 99, 132)';
     const chartBgColor = pnl >= 0 ? 'rgba(75, 192, 75, 0.2)' : 'rgba(255, 99, 132, 0.2)';
     const chartConfig = {
@@ -362,13 +362,13 @@ async function formatAdvancedMarketAnalysis(ownedAssets = []) {
     msg += `📊 *معنويات السوق:* ${sentimentText}\n━━━━━━━━━━━━━━━━━━━\n\n`;
 
     msg += "📈 *أكبر الرابحين (24س):*\n" + topGainers.map(c => {
-        const symbol = c.instId.split('-')[0];
+        const symbol = c.instId.split('-');
         const ownedMark = ownedSymbols.includes(symbol) ? ' ✅' : '';
         return ` - \`${c.instId}\`: \`+${formatNumber(c.change24h * 100)}%\`${ownedMark}`;
     }).join('\n') + "\n\n";
 
     msg += "📉 *أكبر الخاسرين (24س):*\n" + topLosers.map(c => {
-        const symbol = c.instId.split('-')[0];
+        const symbol = c.instId.split('-');
         const ownedMark = ownedSymbols.includes(symbol) ? ' ✅' : '';
         return ` - \`${c.instId}\`: \`${formatNumber(c.change24h * 100)}%\`${ownedMark}`;
     }).join('\n') + "\n\n";
@@ -376,12 +376,12 @@ async function formatAdvancedMarketAnalysis(ownedAssets = []) {
     msg += "📊 *الأعلى في حجم التداول:*\n" + highVolume.map(c => ` - \`${c.instId}\`: \`${(c.volCcy24h / 1e6).toFixed(2)}M\` USDT`).join('\n') + "\n\n";
     
     let smartRecommendation = "💡 *توصية:* راقب الأصول ذات حجم التداول المرتفع، فهي غالبًا ما تقود اتجاه السوق.";
-    const ownedGainers = topGainers.filter(g => ownedSymbols.includes(g.instId.split('-')[0]));
-    const ownedLosers = topLosers.filter(l => ownedSymbols.includes(l.instId.split('-')[0]));
+    const ownedGainers = topGainers.filter(g => ownedSymbols.includes(g.instId.split('-')));
+    const ownedLosers = topLosers.filter(l => ownedSymbols.includes(l.instId.split('-')));
     if (ownedGainers.length > 0) {
-        smartRecommendation = `💡 *توصية ذكية:* عملة *${ownedGainers[0].instId.split('-')[0]}* التي تملكها ضمن أكبر الرابحين. قد تكون فرصة جيدة لتقييم المركز.`;
+        smartRecommendation = `💡 *توصية ذكية:* عملة *${ownedGainers.instId.split('-')}* التي تملكها ضمن أكبر الرابحين. قد تكون فرصة جيدة لتقييم المركز.`;
     } else if (ownedLosers.length > 0) {
-        smartRecommendation = `💡 *توصية ذكية:* عملة *${ownedLosers[0].instId.split('-')[0]}* التي تملكها ضمن أكبر الخاسرين. قد يتطلب الأمر مراجعة وقف الخسارة أو استراتيجيتك.`;
+        smartRecommendation = `💡 *توصية ذكية:* عملة *${ownedLosers.instId.split('-')}* التي تملكها ضمن أكبر الخاسرين. قد يتطلب الأمر مراجعة وقف الخسارة أو استراتيجيتك.`;
     }
     msg += `${smartRecommendation}`;
     
@@ -438,7 +438,7 @@ async function formatPerformanceReport(period, periodLabel, history, btcHistory)
     let btcPerformanceText = " `لا تتوفر بيانات`";
     let benchmarkComparison = "";
     if (btcHistory && btcHistory.length >= 2) {
-        const btcStart = btcHistory[0].close;
+        const btcStart = btcHistory.close;
         const btcEnd = btcHistory[btcHistory.length - 1].close;
         const btcChange = (btcEnd - btcStart) / btcStart * 100;
         btcPerformanceText = `\`${btcChange >= 0 ? '+' : ''}${formatNumber(btcChange)}%\``;
@@ -520,13 +520,15 @@ async function formatDailyCopyReport() {
     return report;
 }
 async function runDailyReportJob() { try { await sendDebugMessage("Running daily copy-trading report job..."); const report = await formatDailyCopyReport(); if (report.startsWith("📊 لم يتم إغلاق أي صفقات")) { await bot.api.sendMessage(AUTHORIZED_USER_ID, report); } else { await bot.api.sendMessage(process.env.TARGET_CHANNEL_ID, report); await bot.api.sendMessage(AUTHORIZED_USER_ID, "✅ تم إرسال تقرير النسخ اليومي إلى القناة بنجاح."); } } catch(e) { console.error("Error in runDailyReportJob:", e); await bot.api.sendMessage(AUTHORIZED_USER_ID, `❌ حدث خطأ أثناء إنشاء تقرير النسخ اليومي: ${e.message}`); } }
-async function generateAndSendCumulativeReport(ctx, asset) { try { const trades = await getCollection("tradeHistory").find({ asset: asset }).toArray(); if (trades.length === 0) { await ctx.reply(`ℹ️ لا يوجد سجل صفقات مغلقة لعملة *${asset}*.`, { parse_mode: "Markdown" }); return; } const totalPnl = trades.reduce((sum, trade) => sum + (trade.pnl || 0), 0); const totalRoi = trades.reduce((sum, trade) => sum + (trade.pnlPercent || 0), 0); const avgRoi = totalRoi / trades.length; const winningTrades = trades.filter(t => (t.pnl || 0) > 0).length; const winRate = (winningTrades / trades.length) * 100; const bestTrade = trades.reduce((max, trade) => (trade.pnlPercent || 0) > (max.pnlPercent || 0) ? trade : max, trades[0]); const worstTrade = trades.reduce((min, trade) => (trade.pnlPercent || 0) < (min.pnlPercent || 0) ? trade : min, trades[0]); const impactSign = totalPnl >= 0 ? '+' : ''; const impactEmoji = totalPnl >= 0 ? '🟢' : '🔴'; const winRateEmoji = winRate >= 50 ? '✅' : '⚠️'; let report = `*تحليل الأثر التراكمي | ${asset}* 🔬\n\n`; report += `*الخلاصة الاستراتيجية:*\n`; report += `تداولاتك في *${asset}* أضافت ما قيمته \`${impactSign}$${formatNumber(totalPnl)}\` ${impactEmoji} إلى محفظتك بشكل تراكمي.\n\n`; report += `*ملخص الأداء التاريخي:*\n`; report += ` ▪️ *إجمالي الصفقات:* \`${trades.length}\`\n`; report += ` ▪️ *معدل النجاح (Win Rate):* \`${formatNumber(winRate)}%\` ${winRateEmoji}\n`; report += ` ▪️ *متوسط العائد (ROI):* \`${formatNumber(avgRoi)}%\`\n\n`; report += `*أبرز الصفقات:*\n`; report += ` 🏆 *أفضل صفقة:* ربح بنسبة \`${formatNumber(bestTrade.pnlPercent)}%\`\n`; report += ` 💔 *أسوأ صفقة:* ${worstTrade.pnlPercent < 0 ? 'خسارة' : 'ربح'} بنسبة \`${formatNumber(worstTrade.pnlPercent)}%\`\n\n`; report += `*توصية استراتيجية خاصة:*\n`; if (avgRoi > 5 && winRate > 60) { report += `أداء *${asset}* يتفوق على المتوسط بشكل واضح. قد تفكر في زيادة حجم صفقاتك المستقبلية فيها.`; } else if (totalPnl < 0) { report += `أداء *${asset}* سلبي. قد ترغب في مراجعة استراتيجيتك لهذه العملة أو تقليل المخاطرة فيها.`; } else { report += `أداء *${asset}* يعتبر ضمن النطاق المقبول. استمر في المراقبة والتحليل.`; } await ctx.reply(report, { parse_mode: "Markdown" }); } catch(e) { console.error(`Error generating cumulative report for ${asset}:`, e); await ctx.reply("❌ حدث خطأ أثناء إنشاء التقرير."); } }
+async function generateAndSendCumulativeReport(ctx, asset) { try { const trades = await getCollection("tradeHistory").find({ asset: asset }).toArray(); if (trades.length === 0) { await ctx.reply(`ℹ️ لا يوجد سجل صفقات مغلقة لعملة *${asset}*.`, { parse_mode: "Markdown" }); return; } const totalPnl = trades.reduce((sum, trade) => sum + (trade.pnl || 0), 0); const totalRoi = trades.reduce((sum, trade) => sum + (trade.pnlPercent || 0), 0); const avgRoi = totalRoi / trades.length; const winningTrades = trades.filter(t => (t.pnl || 0) > 0).length; const winRate = (winningTrades / trades.length) * 100; const bestTrade = trades.reduce((max, trade) => (trade.pnlPercent || 0) > (max.pnlPercent || 0) ? trade : max, trades); const worstTrade = trades.reduce((min, trade) => (trade.pnlPercent || 0) < (min.pnlPercent || 0) ? trade : min, trades); const impactSign = totalPnl >= 0 ? '+' : ''; const impactEmoji = totalPnl >= 0 ? '🟢' : '🔴'; const winRateEmoji = winRate >= 50 ? '✅' : '⚠️'; let report = `*تحليل الأثر التراكمي | ${asset}* 🔬\n\n`; report += `*الخلاصة الاستراتيجية:*\n`; report += `تداولاتك في *${asset}* أضافت ما قيمته \`${impactSign}$${formatNumber(totalPnl)}\` ${impactEmoji} إلى محفظتك بشكل تراكمي.\n\n`; report += `*ملخص الأداء التاريخي:*\n`; report += ` ▪️ *إجمالي الصفقات:* \`${trades.length}\`\n`; report += ` ▪️ *معدل النجاح (Win Rate):* \`${formatNumber(winRate)}%\` ${winRateEmoji}\n`; report += ` ▪️ *متوسط العائد (ROI):* \`${formatNumber(avgRoi)}%\`\n\n`; report += `*أبرز الصفقات:*\n`; report += ` 🏆 *أفضل صفقة:* ربح بنسبة \`${formatNumber(bestTrade.pnlPercent)}%\`\n`; report += ` 💔 *أسوأ صفقة:* ${worstTrade.pnlPercent < 0 ? 'خسارة' : 'ربح'} بنسبة \`${formatNumber(worstTrade.pnlPercent)}%\`\n\n`; report += `*توصية استراتيجية خاصة:*\n`; if (avgRoi > 5 && winRate > 60) { report += `أداء *${asset}* يتفوق على المتوسط بشكل واضح. قد تفكر في زيادة حجم صفقاتك المستقبلية فيها.`; } else if (totalPnl < 0) { report += `أداء *${asset}* سلبي. قد ترغب في مراجعة استراتيجيتك لهذه العملة أو تقليل المخاطرة فيها.`; } else { report += `أداء *${asset}* يعتبر ضمن النطاق المقبول. استمر في المراقبة والتحليل.`; } await ctx.reply(report, { parse_mode: "Markdown" }); } catch(e) { console.error(`Error generating cumulative report for ${asset}:`, e); await ctx.reply("❌ حدث خطأ أثناء إنشاء التقرير."); } }
 
 // =================================================================
 // SECTION 5: BOT SETUP, KEYBOARDS, AND HANDLERS
 // =================================================================
-const mainKeyboard = new Keyboard() .text("📊 عرض المحفظة").text("📈 أداء المحفظة").row() .text("🚀 تحليل السوق").text("💡 توصية افتراضية").row() .text("⚡ إحصائيات سريعة").text("📈 تحليل تراكمي").row() .text("🔔 ضبط تنبيه").text("ℹ️ معلومات عملة").row() .text("🧮 حاسبة الربح والخسارة").text("⚙️ الإعدادات").row() .resized();
+const mainKeyboard = new Keyboard() .text("📊 عرض المحفظة").text("📈 أداء المحفظة").row() .text("🚀 تحليل السوق").text("💡 توصية افتراضية").row() .text("⚡ إحصائيات سريعة").text("📈 تحليل تراكمي").row() .text("🔔 ضبط تنبيه").text("ℹ️ معلومات عملة").row() .text("🧮 الحاسبة المتقدمة").text("⚙️ الإعدادات").row() .resized();
 const virtualTradeKeyboard = new InlineKeyboard().text("➕ إضافة توصية جديدة", "add_virtual_trade").row().text("📈 متابعة التوصيات الحية", "track_virtual_trades");
+const calculatorKeyboard = new InlineKeyboard().text("📈 حساب الربح/الخسارة المتوقع", "calculate_pnl").row().text("➗ حساب متوسط الدخول الجديد", "calculate_avg_entry");
+
 async function sendSettingsMenu(ctx) { const settings = await loadSettings(); const settingsKeyboard = new InlineKeyboard().text("💰 تعيين رأس المال", "set_capital").text("💼 عرض المراكز المفتوحة", "view_positions").row().text("🚨 إدارة تنبيهات الحركة", "manage_movement_alerts").text("🗑️ حذف تنبيه سعر", "delete_alert").row().text(`📰 الملخص اليومي: ${settings.dailySummary ? '✅' : '❌'}`, "toggle_summary").text(`🚀 النشر للقناة: ${settings.autoPostToChannel ? '✅' : '❌'}`, "toggle_autopost").row().text(`🐞 وضع التشخيص: ${settings.debugMode ? '✅' : '❌'}`, "toggle_debug").text("📊 إرسال تقرير النسخ", "send_daily_report").row().text("🔥 حذف جميع البيانات 🔥", "delete_all_data"); const text = "⚙️ *لوحة التحكم والإعدادات الرئيسية*"; try { if (ctx.callbackQuery) { await ctx.editMessageText(text, { parse_mode: "Markdown", reply_markup: settingsKeyboard }); } else { await ctx.reply(text, { parse_mode: "Markdown", reply_markup: settingsKeyboard }); } } catch(e) { console.error("Error sending settings menu:", e); } }
 async function sendMovementAlertsMenu(ctx) { const alertSettings = await loadAlertSettings(); const text = `🚨 *إدارة تنبيهات حركة الأسعار*\n\n- *النسبة العامة الحالية:* \`${alertSettings.global}%\`.\n- يمكنك تعيين نسبة مختلفة لعملة معينة.`; const keyboard = new InlineKeyboard().text("📊 تعديل النسبة العامة", "set_global_alert").text("💎 تعديل نسبة عملة", "set_coin_alert").row().text("🔙 العودة للإعدادات", "back_to_settings"); await ctx.editMessageText(text, { parse_mode: "Markdown", reply_markup: keyboard }); }
 
@@ -534,7 +536,6 @@ bot.use(async (ctx, next) => { if (ctx.from?.id === AUTHORIZED_USER_ID) { await 
 
 bot.command("start", (ctx) => { const welcomeMessage = `🤖 *أهلاً بك في بوت التحليل المتكامل لمنصة OKX.*\n\n` + `*اضغط على الأزرار أدناه للبدء!*`; ctx.reply(welcomeMessage, { parse_mode: "Markdown", reply_markup: mainKeyboard }); });
 bot.command("settings", async (ctx) => { await sendSettingsMenu(ctx); });
-bot.command("pnl", async (ctx) => { const args = ctx.match.trim().split(/\s+/); if (args.length !== 3 || args[0] === '') { return await ctx.reply(`❌ *صيغة غير صحيحة.*\n*مثال:* \`/pnl <سعر الشراء> <سعر البيع> <الكمية>\``, { parse_mode: "Markdown" }); } const [buyPrice, sellPrice, quantity] = args.map(parseFloat); if (isNaN(buyPrice) || isNaN(sellPrice) || isNaN(quantity) || buyPrice <= 0 || sellPrice <= 0 || quantity <= 0) { return await ctx.reply("❌ *خطأ:* تأكد من أن جميع القيم هي أرقام موجبة."); } const investment = buyPrice * quantity; const saleValue = sellPrice * quantity; const pnl = saleValue - investment; const pnlPercent = (investment > 0) ? (pnl / investment) * 100 : 0; const status = pnl >= 0 ? "ربح ✅" : "خسارة 🔻"; const sign = pnl >= 0 ? '+' : ''; const msg = `🧮 *نتيجة حساب الربح والخسارة*\n\n` + `*صافي الربح/الخسارة:* \`${sign}${formatNumber(pnl)}\` (\`${sign}${formatNumber(pnlPercent)}%\`)\n` + `**الحالة النهائية: ${status}**`; await ctx.reply(msg, { parse_mode: "Markdown" }); });
 
 bot.on("callback_query:data", async (ctx) => {
     await ctx.answerCallbackQuery();
@@ -542,7 +543,7 @@ bot.on("callback_query:data", async (ctx) => {
 
     try {
         if (data.startsWith("chart_")) {
-            const period = data.split('_')[1];
+            const period = data.split('_');
             await ctx.editMessageText("⏳ جاري إنشاء تقرير الأداء المتقدم...");
             let history, periodLabel, bar, limit;
             if (period === '24h') {
@@ -604,6 +605,8 @@ bot.on("callback_query:data", async (ctx) => {
         }
 
         switch(data) {
+            case "calculate_pnl": waitingState = 'pnl_asset'; await ctx.editMessageText("✍️ يرجى إرسال رمز العملة التي تود حساب ربحها (مثال: `APT`)."); break;
+            case "calculate_avg_entry": waitingState = 'avg_entry_asset'; await ctx.editMessageText("✍️ يرجى إرسال رمز العملة التي تود حساب متوسط تعزيزها (مثال: `APT`)."); break;
             case "add_virtual_trade": waitingState = 'add_virtual_trade'; await ctx.editMessageText("✍️ *لإضافة توصية افتراضية، أرسل التفاصيل في 5 أسطر منفصلة:*\n\n`BTC-USDT`\n`65000` (سعر الدخول)\n`70000` (سعر الهدف)\n`62000` (وقف الخسارة)\n`1000` (المبلغ الافتراضي)\n\n**ملاحظة:** *لا تكتب كلمات مثل 'دخول' أو 'هدف'، فقط الأرقام والرمز.*", { parse_mode: "Markdown" }); break;
             case "track_virtual_trades": await ctx.editMessageText("⏳ جاري جلب التوصيات النشطة..."); const activeTrades = await getActiveVirtualTrades(); if (activeTrades.length === 0) { await ctx.editMessageText("✅ لا توجد توصيات افتراضية نشطة حاليًا.", { reply_markup: virtualTradeKeyboard }); return; } const prices = await okxAdapter.getMarketPrices(); if (!prices || prices.error) { await ctx.editMessageText(`❌ فشل جلب الأسعار، لا يمكن متابعة التوصيات.`, { reply_markup: virtualTradeKeyboard }); return; } let reportMsg = "📈 *متابعة حية للتوصيات النشطة:*\n" + "━━━━━━━━━━━━━━━━━━━━\n"; for (const trade of activeTrades) { const currentPrice = prices[trade.instId]?.price; if (!currentPrice) { reportMsg += `*${trade.instId}:* \`لا يمكن جلب السعر الحالي.\`\n`; } else { const pnl = (currentPrice - trade.entryPrice) * (trade.virtualAmount / trade.entryPrice); const pnlPercent = (trade.virtualAmount > 0) ? (pnl / trade.virtualAmount) * 100 : 0; const sign = pnl >= 0 ? '+' : ''; const emoji = pnl >= 0 ? '🟢' : '🔴'; reportMsg += `*${trade.instId}* ${emoji}\n` + ` ▫️ *الدخول:* \`$${formatNumber(trade.entryPrice, 4)}\`\n` + ` ▫️ *الحالي:* \`$${formatNumber(currentPrice, 4)}\`\n` + ` ▫️ *ربح/خسارة:* \`${sign}${formatNumber(pnl)}\` (\`${sign}${formatNumber(pnlPercent)}%\`)\n` + ` ▫️ *الهدف:* \`$${formatNumber(trade.targetPrice, 4)}\`\n` + ` ▫️ *الوقف:* \`$${formatNumber(trade.stopLossPrice, 4)}\`\n`; } reportMsg += "━━━━━━━━━━━━━━━━━━━━\n"; } await ctx.editMessageText(reportMsg, { parse_mode: "Markdown", reply_markup: virtualTradeKeyboard }); break;
             case "set_capital": waitingState = 'set_capital'; await ctx.editMessageText("💰 يرجى إرسال المبلغ الجديد لرأس المال (رقم فقط)."); break;
@@ -626,198 +629,96 @@ bot.on("message:text", async (ctx) => {
 
     if (waitingState) {
         const state = waitingState;
+        const userId = ctx.from.id;
         waitingState = null;
         switch (state) {
-            case 'cumulative_analysis_asset':
-                await generateAndSendCumulativeReport(ctx, text.toUpperCase());
-                return;
-            case 'add_virtual_trade':
-                try {
-                    const lines = text.split('\n').map(line => line.trim());
-                    if (lines.length < 5) throw new Error("التنسيق غير صحيح، يجب أن يتكون من 5 أسطر.");
-                    const instId = lines[0].toUpperCase();
-                    const entryPrice = parseFloat(lines[1]);
-                    const targetPrice = parseFloat(lines[2]);
-                    const stopLossPrice = parseFloat(lines[3]);
-                    const virtualAmount = parseFloat(lines[4]);
-                    if (!instId.endsWith('-USDT')) throw new Error("رمز العملة يجب أن ينتهي بـ -USDT.");
-                    if ([entryPrice, targetPrice, stopLossPrice, virtualAmount].some(isNaN)) { throw new Error("تأكد من أن جميع القيم المدخلة هي أرقام صالحة."); }
-                    if (entryPrice <= 0 || targetPrice <= 0 || stopLossPrice <= 0 || virtualAmount <= 0) { throw new Error("جميع القيم الرقمية يجب أن تكون أكبر من صفر."); }
-                    if (targetPrice <= entryPrice) throw new Error("سعر الهدف يجب أن يكون أعلى من سعر الدخول.");
-                    if (stopLossPrice >= entryPrice) throw new Error("سعر وقف الخسارة يجب أن يكون أقل من سعر الدخول.");
-                    const tradeData = { instId, entryPrice, targetPrice, stopLossPrice, virtualAmount, status: 'active', createdAt: new Date() };
-                    await saveVirtualTrade(tradeData);
-                    await ctx.reply(`✅ *تمت إضافة التوصية الافتراضية بنجاح.*\n\nسيتم إعلامك عند تحقيق الهدف أو تفعيل وقف الخسارة.`, { parse_mode: "Markdown" });
-                } catch (e) {
-                    await ctx.reply(`❌ *خطأ في إضافة التوصية:*\n${e.message}\n\nالرجاء المحاولة مرة أخرى بالتنسيق الصحيح.`);
-                }
-                return;
-            case 'set_capital':
-                const amount = parseFloat(text);
-                if (!isNaN(amount) && amount >= 0) {
-                    await saveCapital(amount);
-                    await ctx.reply(`✅ *تم تحديث رأس المال إلى:* \`$${formatNumber(amount)}\``, { parse_mode: "Markdown" });
-                } else {
-                    await ctx.reply("❌ مبلغ غير صالح.");
-                }
-                return;
-            case 'set_global_alert_state':
-                const percent = parseFloat(text);
-                if (!isNaN(percent) && percent > 0) {
-                    const alertSettingsGlobal = await loadAlertSettings();
-                    alertSettingsGlobal.global = percent;
-                    await saveAlertSettings(alertSettingsGlobal);
-                    await ctx.reply(`✅ تم تحديث النسبة العامة لتنبيهات الحركة إلى \`${percent}%\`.`);
-                } else {
-                    await ctx.reply("❌ *خطأ:* النسبة يجب أن تكون رقمًا موجبًا.");
-                }
-                return;
-            case 'set_coin_alert_state':
-                const parts_coin_alert = text.split(/\s+/);
-                if (parts_coin_alert.length !== 2) {
-                    await ctx.reply("❌ *صيغة غير صحيحة*. يرجى إرسال رمز العملة ثم النسبة.");
+            case 'pnl_asset': {
+                const asset = text.toUpperCase();
+                const positions = await loadPositions();
+                const position = positions[asset];
+                if (!position || !position.avgBuyPrice || !position.totalAmountBought) {
+                    await ctx.reply(`❌ لم يتم العثور على مركز مفتوح لعملة *${asset}*.`, { parse_mode: "Markdown" });
                     return;
                 }
-                const [symbol_coin_alert, percentStr_coin_alert] = parts_coin_alert;
-                const coinPercent = parseFloat(percentStr_coin_alert);
-                if (isNaN(coinPercent) || coinPercent < 0) {
-                    await ctx.reply("❌ *خطأ:* النسبة يجب أن تكون رقمًا.");
+                tempData[userId] = { asset };
+                waitingState = 'pnl_target_price';
+                await ctx.reply(`✅ تم العثور على مركز *${asset}*.\nمتوسط الشراء: \`$${formatNumber(position.avgBuyPrice, 4)}\`.\n\n✍️ الآن، يرجى إرسال *سعر البيع المستهدف*.`, { parse_mode: "Markdown" });
+                return;
+            }
+            case 'pnl_target_price': {
+                const targetPrice = parseFloat(text);
+                if (isNaN(targetPrice) || targetPrice <= 0) {
+                    await ctx.reply("❌ سعر غير صالح. يرجى إرسال رقم موجب.");
+                    waitingState = 'pnl_target_price';
                     return;
                 }
-                const alertSettingsCoin = await loadAlertSettings();
-                if (coinPercent === 0) {
-                    delete alertSettingsCoin.overrides[symbol_coin_alert.toUpperCase()];
-                    await ctx.reply(`✅ تم حذف الإعداد المخصص لـ *${symbol_coin_alert.toUpperCase()}* وستتبع الآن النسبة العامة.`);
-                } else {
-                    alertSettingsCoin.overrides[symbol_coin_alert.toUpperCase()] = coinPercent;
-                    await ctx.reply(`✅ تم تحديث النسبة المخصصة لـ *${symbol_coin_alert.toUpperCase()}* إلى \`${coinPercent}%\`.`);
-                }
-                await saveAlertSettings(alertSettingsCoin);
-                return;
-            case 'confirm_delete_all':
-                if (text === 'تأكيد الحذف') {
-                    await getCollection("configs").deleteMany({});
-                    await getCollection("virtualTrades").deleteMany({});
-                    await getCollection("tradeHistory").deleteMany({});
-                    await ctx.reply("✅ تم حذف جميع بياناتك.");
-                } else {
-                    await ctx.reply("❌ تم إلغاء الحذف.");
-                }
-                return;
-            case 'coin_info':
-                const instId = text.toUpperCase();
-                const coinSymbol = instId.split('-')[0];
-                const loadingMsg = await ctx.reply(`⏳ جاري تجهيز التقرير لـ ${instId}...`);
+                const { asset } = tempData[userId];
+                const positions = await loadPositions();
+                const position = positions[asset];
+                const pnl = (targetPrice - position.avgBuyPrice) * position.totalAmountBought;
+                const totalCost = position.avgBuyPrice * position.totalAmountBought;
+                const pnlPercent = totalCost > 0 ? (pnl / totalCost) * 100 : 0;
+                const sign = pnl >= 0 ? '+' : '';
+                const emoji = pnl >= 0 ? '🟢' : '🔴';
 
-                try {
-                    const results = await Promise.allSettled([
-                        getInstrumentDetails(instId),
-                        okxAdapter.getMarketPrices(),
-                        getHistoricalPerformance(coinSymbol),
-                        getTechnicalAnalysis(instId)
-                    ]);
+                let msg = `🧮 *النتيجة المتوقعة لبيع ${asset}:*\n\n`;
+                msg += `*صافي الربح/الخسارة:* ${emoji} \`${sign}$${formatNumber(pnl)}\`\n`;
+                msg += `*نسبة الربح/الخسارة:* \`${sign}${formatNumber(pnlPercent)}%\`\n\n`;
+                msg += `*بناءً على بيع الكمية كاملة (\`${formatNumber(position.totalAmountBought, 6)}\`)*`;
+                await ctx.reply(msg, { parse_mode: "Markdown" });
+                delete tempData[userId];
+                return;
+            }
+             case 'avg_entry_asset': {
+                const asset = text.toUpperCase();
+                const positions = await loadPositions();
+                const position = positions[asset];
+                tempData[userId] = { asset, position };
+                waitingState = 'avg_entry_details';
+                 if (position) {
+                    await ctx.reply(`✅ تم العثور على مركز *${asset}*.\n\n✍️ يرجى إرسال *السعر والكمية الجديدة* التي تود شراءها.\n*مثال:* \`1.25 1000\` (يعني شراء 1000 وحدة بسعر 1.25)`, { parse_mode: "Markdown" });
+                } else {
+                    await ctx.reply(`ℹ️ لا يوجد مركز حالي لعملة *${asset}*.\n\n✍️ سيتم حساب المتوسط بناء على أول عملية شراء. يرجى إرسال *السعر والكمية*.\n*مثال:* \`1.25 1000\``, { parse_mode: "Markdown" });
+                }
+                return;
+            }
+            case 'avg_entry_details': {
+                const parts = text.split(/\s+/);
+                if (parts.length !== 2) {
+                    await ctx.reply("❌ صيغة غير صحيحة. يرجى إرسال السعر ثم الكمية.");
+                    waitingState = 'avg_entry_details';
+                    return;
+                }
+                const newPrice = parseFloat(parts);
+                const newAmount = parseFloat(parts);
 
-                    const detailsResult = results[0];
-                    const pricesResult = results[1];
-                    const historicalPerfResult = results[2];
-                    const techAnalysisResult = results[3];
-                    
-                    if (detailsResult.status === 'rejected' || (detailsResult.status === 'fulfilled' && detailsResult.value.error)) {
-                        const errorMsg = detailsResult.reason?.message || detailsResult.value?.error || "فشل جلب البيانات الأساسية للعملة.";
-                        throw new Error(errorMsg);
-                    }
-            
-                    const details = detailsResult.value;
-                    let msg = `ℹ️ *الملف التحليلي الكامل | ${instId}*\n\n*القسم الأول: بيانات السوق*\n`;
-                    msg += ` ▫️ *السعر الحالي:* \`$${formatNumber(details.price, 4)}\`\n`;
-                    msg += ` ▫️ *أعلى (24س):* \`$${formatNumber(details.high24h, 4)}\`\n`;
-                    msg += ` ▫️ *أدنى (24س):* \`$${formatNumber(details.low24h, 4)}\`\n\n`;
-            
-                    msg += `*القسم الثاني: تحليل مركزك الحالي*\n`;
-                    if (pricesResult.status === 'fulfilled' && !pricesResult.value.error) {
-                        const prices = pricesResult.value;
-                        const { assets: userAssets } = await okxAdapter.getPortfolio(prices);
-                        const ownedAsset = userAssets.find(a => a.asset === coinSymbol);
-                        const positions = await loadPositions();
-                        const assetPosition = positions[coinSymbol];
-                        if (ownedAsset && assetPosition?.avgBuyPrice) {
-                            const pnl = (details.price - assetPosition.avgBuyPrice) * ownedAsset.amount;
-                            const pnlPercent = (assetPosition.avgBuyPrice > 0) ? (pnl / (assetPosition.avgBuyPrice * ownedAsset.amount)) * 100 : 0;
-                            const durationDays = (new Date().getTime() - new Date(assetPosition.openDate).getTime()) / (1000 * 60 * 60 * 24);
-                            msg += ` ▪️ *متوسط الشراء:* \`$${formatNumber(assetPosition.avgBuyPrice, 4)}\`\n`;
-                            msg += ` ▪️ *الربح/الخسارة غير المحقق:* ${pnl >= 0 ? '🟢' : '🔴'} \`${pnl >= 0 ? '+' : ''}${formatNumber(pnl)}\` (\`${pnl >= 0 ? '+' : ''}${formatNumber(pnlPercent)}%\`)\n`;
-                            msg += ` ▪️ *مدة فتح المركز:* \`${formatNumber(durationDays, 1)} يوم\`\n\n`;
-                        } else {
-                            msg += ` ▪️ لا يوجد مركز مفتوح حالياً لهذه العملة.\n\n`;
-                        }
-                    } else {
-                        msg += ` ▪️ تعذر تحليل المركز (فشل جلب بيانات المحفظة).\n\n`;
-                    }
-            
-                    msg += `*القسم الثالث: تاريخ أدائك مع العملة*\n`;
-                    if (historicalPerfResult.status === 'fulfilled' && historicalPerfResult.value) {
-                        const historicalPerf = historicalPerfResult.value;
-                        if (historicalPerf.tradeCount > 0) {
-                            msg += ` ▪️ *إجمالي الربح/الخسارة المحقق:* \`${historicalPerf.realizedPnl >= 0 ? '+' : ''}${formatNumber(historicalPerf.realizedPnl)}\`\n`;
-                            msg += ` ▪️ *سجل الصفقات:* \`${historicalPerf.tradeCount}\` (${historicalPerf.winningTrades} رابحة / ${historicalPerf.losingTrades} خاسرة)\n\n`;
-                        } else {
-                            msg += ` ▪️ لا يوجد تاريخ صفقات مغلقة لهذه العملة.\n\n`;
-                        }
-                    } else {
-                        msg += ` ▪️ تعذر جلب سجل الأداء التاريخي.\n\n`;
-                    }
-                    
-                    msg += `*القسم الرابع: مؤشرات فنية بسيطة*\n`;
-                    if (techAnalysisResult.status === 'fulfilled' && !techAnalysisResult.value.error) {
-                        const techAnalysis = techAnalysisResult.value;
-                        let rsiText = "محايد";
-                        if (techAnalysis.rsi > 70) rsiText = "تشبع شرائي 🔴";
-                        if (techAnalysis.rsi < 30) rsiText = "تشبع بيعي 🟢";
-                        msg += ` ▪️ *RSI (14D):* \`${formatNumber(techAnalysis.rsi)}\` (${rsiText})\n`;
-                        if(techAnalysis.sma20) msg += ` ▪️ *السعر* *${details.price > techAnalysis.sma20 ? 'فوق' : 'تحت'}* *SMA20* (\`$${formatNumber(techAnalysis.sma20, 4)}\`)\n`;
-                        if(techAnalysis.sma50) msg += ` ▪️ *السعر* *${details.price > techAnalysis.sma50 ? 'فوق' : 'تحت'}* *SMA50* (\`$${formatNumber(techAnalysis.sma50, 4)}\`)`;
-                    } else {
-                         msg += ` ▪️ تعذر جلب المؤشرات الفنية.\n`;
-                    }
-            
-                    await ctx.api.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, msg, { parse_mode: "Markdown" });
-                } catch(e) {
-                    console.error("Error fetching coin info:", e);
-                    await ctx.api.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, `❌ حدث خطأ أثناء جلب البيانات: ${e.message}`);
+                if (isNaN(newPrice) || isNaN(newAmount) || newPrice <= 0 || newAmount <= 0) {
+                    await ctx.reply("❌ قيم غير صالحة. تأكد من إدخال أرقام موجبة للسعر والكمية.");
+                    waitingState = 'avg_entry_details';
+                    return;
                 }
+
+                const { position } = tempData[userId];
+                const currentAmount = position?.totalAmountBought || 0;
+                const currentAvgPrice = position?.avgBuyPrice || 0;
+
+                const currentValue = currentAmount * currentAvgPrice;
+                const newValue = newAmount * newPrice;
+
+                const totalAmount = currentAmount + newAmount;
+                const totalValue = currentValue + newValue;
+                const newAvgPrice = totalValue / totalAmount;
+
+                let msg = `*📉 نتيجة حساب متوسط التعزيز:*\n\n`;
+                msg += `*متوسط الدخول الحالي:* \`$${formatNumber(currentAvgPrice, 4)}\`\n`;
+                msg += `*متوسط الدخول الجديد:* \`$${formatNumber(newAvgPrice, 4)}\`\n\n`;
+                msg += `سيصبح لديك كمية إجمالية قدرها \`${formatNumber(totalAmount, 6)}\` من العملة.`;
+                await ctx.reply(msg, { parse_mode: "Markdown" });
+
+                delete tempData[userId];
                 return;
-            case 'set_alert':
-                const parts_alert = text.trim().split(/\s+/);
-                if (parts_alert.length !== 3) {
-                    await ctx.reply("❌ صيغة غير صحيحة. مثال: `BTC > 50000`");
-                    return;
-                }
-                const [symbol, cond, priceStr] = parts_alert;
-                if (cond !== '>' && cond !== '<') {
-                    await ctx.reply("❌ الشرط غير صالح. استخدم `>` أو `<`.");
-                    return;
-                }
-                const price = parseFloat(priceStr);
-                if (isNaN(price) || price <= 0) {
-                    await ctx.reply("❌ السعر غير صالح.");
-                    return;
-                }
-                const allAlerts = await loadAlerts();
-                allAlerts.push({ instId: symbol.toUpperCase() + '-USDT', condition: cond, price: price });
-                await saveAlerts(allAlerts);
-                await ctx.reply(`✅ تم ضبط التنبيه: ${symbol.toUpperCase()} ${cond} ${price}`, { parse_mode: "Markdown" });
-                return;
-            case 'delete_alert_number':
-                let currentAlerts = await loadAlerts();
-                const index = parseInt(text) - 1;
-                if (isNaN(index) || index < 0 || index >= currentAlerts.length) {
-                    await ctx.reply("❌ رقم غير صالح.");
-                    return;
-                }
-                currentAlerts.splice(index, 1);
-                await saveAlerts(currentAlerts);
-                await ctx.reply(`✅ تم حذف التنبيه.`);
-                return;
+            }
+            case 'cumulative_analysis_asset': await generateAndSendCumulativeReport(ctx, text.toUpperCase()); return; case 'add_virtual_trade': try { const lines = text.split('\n').map(line => line.trim()); if (lines.length < 5) throw new Error("التنسيق غير صحيح، يجب أن يتكون من 5 أسطر."); const instId = lines.toUpperCase(); const entryPrice = parseFloat(lines); const targetPrice = parseFloat(lines); const stopLossPrice = parseFloat(lines); const virtualAmount = parseFloat(lines); if (!instId.endsWith('-USDT')) throw new Error("رمز العملة يجب أن ينتهي بـ -USDT."); if ([entryPrice, targetPrice, stopLossPrice, virtualAmount].some(isNaN)) { throw new Error("تأكد من أن جميع القيم المدخلة هي أرقام صالحة."); } if (entryPrice <= 0 || targetPrice <= 0 || stopLossPrice <= 0 || virtualAmount <= 0) { throw new Error("جميع القيم الرقمية يجب أن تكون أكبر من صفر."); } if (targetPrice <= entryPrice) throw new Error("سعر الهدف يجب أن يكون أعلى من سعر الدخول."); if (stopLossPrice >= entryPrice) throw new Error("سعر وقف الخسارة يجب أن يكون أقل من سعر الدخول."); const tradeData = { instId, entryPrice, targetPrice, stopLossPrice, virtualAmount, status: 'active', createdAt: new Date() }; await saveVirtualTrade(tradeData); await ctx.reply(`✅ *تمت إضافة التوصية الافتراضية بنجاح.*\n\nسيتم إعلامك عند تحقيق الهدف أو تفعيل وقف الخسارة.`, { parse_mode: "Markdown" }); } catch (e) { await ctx.reply(`❌ *خطأ في إضافة التوصية:*\n${e.message}\n\nالرجاء المحاولة مرة أخرى بالتنسيق الصحيح.`); } return; case 'set_capital': const amount = parseFloat(text); if (!isNaN(amount) && amount >= 0) { await saveCapital(amount); await ctx.reply(`✅ *تم تحديث رأس المال إلى:* \`$${formatNumber(amount)}\``, { parse_mode: "Markdown" }); } else { await ctx.reply("❌ مبلغ غير صالح."); } return; case 'set_global_alert_state': const percent = parseFloat(text); if (!isNaN(percent) && percent > 0) { const alertSettingsGlobal = await loadAlertSettings(); alertSettingsGlobal.global = percent; await saveAlertSettings(alertSettingsGlobal); await ctx.reply(`✅ تم تحديث النسبة العامة لتنبيهات الحركة إلى \`${percent}%\`.`); } else { await ctx.reply("❌ *خطأ:* النسبة يجب أن تكون رقمًا موجبًا."); } return; case 'set_coin_alert_state': const parts_coin_alert = text.split(/\s+/); if (parts_coin_alert.length !== 2) { await ctx.reply("❌ *صيغة غير صحيحة*. يرجى إرسال رمز العملة ثم النسبة."); return; } const [symbol_coin_alert, percentStr_coin_alert] = parts_coin_alert; const coinPercent = parseFloat(percentStr_coin_alert); if (isNaN(coinPercent) || coinPercent < 0) { await ctx.reply("❌ *خطأ:* النسبة يجب أن تكون رقمًا."); return; } const alertSettingsCoin = await loadAlertSettings(); if (coinPercent === 0) { delete alertSettingsCoin.overrides[symbol_coin_alert.toUpperCase()]; await ctx.reply(`✅ تم حذف الإعداد المخصص لـ *${symbol_coin_alert.toUpperCase()}* وستتبع الآن النسبة العامة.`); } else { alertSettingsCoin.overrides[symbol_coin_alert.toUpperCase()] = coinPercent; await ctx.reply(`✅ تم تحديث النسبة المخصصة لـ *${symbol_coin_alert.toUpperCase()}* إلى \`${coinPercent}%\`.`); } await saveAlertSettings(alertSettingsCoin); return; case 'confirm_delete_all': if (text === 'تأكيد الحذف') { await getCollection("configs").deleteMany({}); await getCollection("virtualTrades").deleteMany({}); await getCollection("tradeHistory").deleteMany({}); await ctx.reply("✅ تم حذف جميع بياناتك."); } else { await ctx.reply("❌ تم إلغاء الحذف."); } return; case 'coin_info': const instId = text.toUpperCase(); const coinSymbol = instId.split('-'); const loadingMsg = await ctx.reply(`⏳ جاري تجهيز التقرير لـ ${instId}...`); try { const results = await Promise.allSettled([ getInstrumentDetails(instId), okxAdapter.getMarketPrices(), getHistoricalPerformance(coinSymbol), getTechnicalAnalysis(instId) ]); const detailsResult = results; const pricesResult = results; const historicalPerfResult = results; const techAnalysisResult = results; if (detailsResult.status === 'rejected' || (detailsResult.status === 'fulfilled' && detailsResult.value.error)) { const errorMsg = detailsResult.reason?.message || detailsResult.value?.error || "فشل جلب البيانات الأساسية للعملة."; throw new Error(errorMsg); } const details = detailsResult.value; let msg = `ℹ️ *الملف التحليلي الكامل | ${instId}*\n\n*القسم الأول: بيانات السوق*\n`; msg += ` ▫️ *السعر الحالي:* \`$${formatNumber(details.price, 4)}\`\n`; msg += ` ▫️ *أعلى (24س):* \`$${formatNumber(details.high24h, 4)}\`\n`; msg += ` ▫️ *أدنى (24س):* \`$${formatNumber(details.low24h, 4)}\`\n\n`; msg += `*القسم الثاني: تحليل مركزك الحالي*\n`; if (pricesResult.status === 'fulfilled' && !pricesResult.value.error) { const prices = pricesResult.value; const { assets: userAssets } = await okxAdapter.getPortfolio(prices); const ownedAsset = userAssets.find(a => a.asset === coinSymbol); const positions = await loadPositions(); const assetPosition = positions[coinSymbol]; if (ownedAsset && assetPosition?.avgBuyPrice) { const pnl = (details.price - assetPosition.avgBuyPrice) * ownedAsset.amount; const pnlPercent = (assetPosition.avgBuyPrice > 0) ? (pnl / (assetPosition.avgBuyPrice * ownedAsset.amount)) * 100 : 0; const durationDays = (new Date().getTime() - new Date(assetPosition.openDate).getTime()) / (1000 * 60 * 60 * 24); msg += ` ▪️ *متوسط الشراء:* \`$${formatNumber(assetPosition.avgBuyPrice, 4)}\`\n`; msg += ` ▪️ *الربح/الخسارة غير المحقق:* ${pnl >= 0 ? '🟢' : '🔴'} \`${pnl >= 0 ? '+' : ''}${formatNumber(pnl)}\` (\`${pnl >= 0 ? '+' : ''}${formatNumber(pnlPercent)}%\`)\n`; msg += ` ▪️ *مدة فتح المركز:* \`${formatNumber(durationDays, 1)} يوم\`\n\n`; } else { msg += ` ▪️ لا يوجد مركز مفتوح حالياً لهذه العملة.\n\n`; } } else { msg += ` ▪️ تعذر تحليل المركز (فشل جلب بيانات المحفظة).\n\n`; } msg += `*القسم الثالث: تاريخ أدائك مع العملة*\n`; if (historicalPerfResult.status === 'fulfilled' && historicalPerfResult.value) { const historicalPerf = historicalPerfResult.value; if (historicalPerf.tradeCount > 0) { msg += ` ▪️ *إجمالي الربح/الخسارة المحقق:* \`${historicalPerf.realizedPnl >= 0 ? '+' : ''}${formatNumber(historicalPerf.realizedPnl)}\`\n`; msg += ` ▪️ *سجل الصفقات:* \`${historicalPerf.tradeCount}\` (${historicalPerf.winningTrades} رابحة / ${historicalPerf.losingTrades} خاسرة)\n\n`; } else { msg += ` ▪️ لا يوجد تاريخ صفقات مغلقة لهذه العملة.\n\n`; } } else { msg += ` ▪️ تعذر جلب سجل الأداء التاريخي.\n\n`; } msg += `*القسم الرابع: مؤشرات فنية بسيطة*\n`; if (techAnalysisResult.status === 'fulfilled' && !techAnalysisResult.value.error) { const techAnalysis = techAnalysisResult.value; let rsiText = "محايد"; if (techAnalysis.rsi > 70) rsiText = "تشبع شرائي 🔴"; if (techAnalysis.rsi < 30) rsiText = "تشبع بيعي 🟢"; msg += ` ▪️ *RSI (14D):* \`${formatNumber(techAnalysis.rsi)}\` (${rsiText})\n`; if(techAnalysis.sma20) msg += ` ▪️ *السعر* *${details.price > techAnalysis.sma20 ? 'فوق' : 'تحت'}* *SMA20* (\`$${formatNumber(techAnalysis.sma20, 4)}\`)\n`; if(techAnalysis.sma50) msg += ` ▪️ *السعر* *${details.price > techAnalysis.sma50 ? 'فوق' : 'تحت'}* *SMA50* (\`$${formatNumber(techAnalysis.sma50, 4)}\`)`; } else { msg += ` ▪️ تعذر جلب المؤشرات الفنية.\n`; } await ctx.api.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, msg, { parse_mode: "Markdown" }); } catch(e) { console.error("Error fetching coin info:", e); await ctx.api.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, `❌ حدث خطأ أثناء جلب البيانات: ${e.message}`); } return; case 'set_alert': const parts_alert = text.trim().split(/\s+/); if (parts_alert.length !== 3) { await ctx.reply("❌ صيغة غير صحيحة. مثال: `BTC > 50000`"); return; } const [symbol, cond, priceStr] = parts_alert; if (cond !== '>' && cond !== '<') { await ctx.reply("❌ الشرط غير صالح. استخدم `>` أو `<`."); return; } const price = parseFloat(priceStr); if (isNaN(price) || price <= 0) { await ctx.reply("❌ السعر غير صالح."); return; } const allAlerts = await loadAlerts(); allAlerts.push({ instId: symbol.toUpperCase() + '-USDT', condition: cond, price: price }); await saveAlerts(allAlerts); await ctx.reply(`✅ تم ضبط التنبيه: ${symbol.toUpperCase()} ${cond} ${price}`, { parse_mode: "Markdown" }); return; case 'delete_alert_number': let currentAlerts = await loadAlerts(); const index = parseInt(text) - 1; if (isNaN(index) || index < 0 || index >= currentAlerts.length) { await ctx.reply("❌ رقم غير صالح."); return; } currentAlerts.splice(index, 1); await saveAlerts(currentAlerts); await ctx.reply(`✅ تم حذف التنبيه.`); return;
         }
     }
 
@@ -888,8 +789,8 @@ bot.on("message:text", async (ctx) => {
             waitingState = 'set_alert';
             await ctx.reply("✍️ *لضبط تنبيه سعر، استخدم الصيغة:*\n`BTC > 50000`", { parse_mode: "Markdown" });
             break;
-        case "🧮 حاسبة الربح والخسارة":
-            await ctx.reply("✍️ لحساب الربح/الخسارة، استخدم أمر `/pnl` بالصيغة التالية:\n`/pnl <سعر الشراء> <سعر البيع> <الكمية>`", {parse_mode: "Markdown"});
+        case "🧮 الحاسبة المتقدمة":
+            await ctx.reply("🧮 *الحاسبة المتقدمة*\n\nاختر الأداة التي تريد استخدامها:", { reply_markup: calculatorKeyboard });
             break;
     }
 });
