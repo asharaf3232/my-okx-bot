@@ -1,5 +1,5 @@
 // =================================================================
-// Advanced Analytics Bot - v116 (Stable, Text-Based Performance)
+// Advanced Analytics Bot - v116 (Daily Copy-Trading Report Feature)
 // =================================================================
 
 const express = require("express");
@@ -64,9 +64,9 @@ class OKXAdapter {
             const path = "/api/v5/account/balance";
             const res = await fetch(`${this.baseURL}${path}`, { headers: this.getHeaders("GET", path) });
             const json = await res.json();
-            if (json.code !== '0' || !json.data || !json.data[0] || !json.data[0].details) { return { error: `فشل جلب المحفظة: ${json.msg || 'بيانات غير متوقعة'}` }; }
+            if (json.code !== '0' || !json.data || !json.data[0] || !json.data.details) { return { error: `فشل جلب المحفظة: ${json.msg || 'بيانات غير متوقعة'}` }; }
             let assets = [], total = 0, usdtValue = 0;
-            json.data.details.forEach(asset => {
+            json.data[0].details.forEach(asset => {
                 const amount = parseFloat(asset.eq);
                 if (amount > 0) {
                     const instId = `${asset.ccy}-USDT`;
@@ -87,9 +87,9 @@ class OKXAdapter {
             const path = "/api/v5/account/balance";
             const res = await fetch(`${this.baseURL}${path}`, { headers: this.getHeaders("GET", path) });
             const json = await res.json();
-            if (json.code !== '0' || !json.data || !json.data[0] || !json.data[0].details) { return null; }
+            if (json.code !== '0' || !json.data || !json.data[0] || !json.data.details) { return null; }
             const balances = {};
-            json.data[0].details.forEach(asset => {
+            json.data.details.forEach(asset => {
                 const amount = parseFloat(asset.eq);
                 if (amount > 0) balances[asset.ccy] = amount;
             });
@@ -134,13 +134,13 @@ async function sendDebugMessage(message) { const settings = await loadSettings()
 // =================================================================
 // SECTION 2: DATA PROCESSING FUNCTIONS
 // =================================================================
-async function getInstrumentDetails(instId) { try { const tickerRes = await fetch(`${okxAdapter.baseURL}/api/v5/market/ticker?instId=${instId.toUpperCase()}`); const tickerJson = await tickerRes.json(); if (tickerJson.code !== '0' || !tickerJson.data[0]) return { error: `لم يتم العثور على العملة.` }; const tickerData = tickerJson.data; return { price: parseFloat(tickerData.last), high24h: parseFloat(tickerData.high24h), low24h: parseFloat(tickerData.low24h), vol24h: parseFloat(tickerData.volCcy24h), }; } catch (e) { return { error: "خطأ في الاتصال بالمنصة." }; } }
-async function getHistoricalCandles(instId, limit = 100) { try { const res = await fetch(`${okxAdapter.baseURL}/api/v5/market/history-candles?instId=${instId}&bar=1D&limit=${limit}`); const json = await res.json(); if (json.code !== '0' || !json.data || json.data.length === 0) return []; return json.data.map(c => parseFloat(c[1])).reverse(); } catch (e) { return []; } }
+async function getInstrumentDetails(instId) { try { const tickerRes = await fetch(`${okxAdapter.baseURL}/api/v5/market/ticker?instId=${instId.toUpperCase()}`); const tickerJson = await tickerRes.json(); if (tickerJson.code !== '0' || !tickerJson.data[0]) return { error: `لم يتم العثور على العملة.` }; const tickerData = tickerJson.data[0]; return { price: parseFloat(tickerData.last), high24h: parseFloat(tickerData.high24h), low24h: parseFloat(tickerData.low24h), vol24h: parseFloat(tickerData.volCcy24h), }; } catch (e) { return { error: "خطأ في الاتصال بالمنصة." }; } }
+async function getHistoricalCandles(instId, limit = 100) { try { const res = await fetch(`${okxAdapter.baseURL}/api/v5/market/history-candles?instId=${instId}&bar=1D&limit=${limit}`); const json = await res.json(); if (json.code !== '0' || !json.data || json.data.length === 0) return []; return json.data.map(c => parseFloat(c[4])).reverse(); } catch (e) { return []; } }
 function calculateSMA(closes, period) { if (closes.length < period) return null; const sum = closes.slice(-period).reduce((acc, val) => acc + val, 0); return sum / period; }
 function calculateRSI(closes, period = 14) { if (closes.length < period + 1) return null; let gains = 0, losses = 0; for (let i = 1; i <= period; i++) { const diff = closes[i] - closes[i - 1]; diff > 0 ? gains += diff : losses -= diff; } let avgGain = gains / period, avgLoss = losses / period; for (let i = period + 1; i < closes.length; i++) { const diff = closes[i] - closes[i - 1]; if (diff > 0) { avgGain = (avgGain * (period - 1) + diff) / period; avgLoss = (avgLoss * (period - 1)) / period; } else { avgLoss = (avgLoss * (period - 1) - diff) / period; avgGain = (avgGain * (period - 1)) / period; } } if (avgLoss === 0) return 100; const rs = avgGain / avgLoss; return 100 - (100 / (1 + rs)); }
 async function getTechnicalAnalysis(instId) { const closes = await getHistoricalCandles(instId, 51); if (closes.length < 51) return { error: "بيانات الشموع غير كافية." }; return { rsi: calculateRSI(closes), sma20: calculateSMA(closes, 20), sma50: calculateSMA(closes, 50) }; }
 function calculatePerformanceStats(history) { if (history.length < 2) return null; const values = history.map(h => h.total); const startValue = values[0]; const endValue = values[values.length - 1]; const pnl = endValue - startValue; const pnlPercent = (startValue > 0) ? (pnl / startValue) * 100 : 0; const maxValue = Math.max(...values); const minValue = Math.min(...values); const avgValue = values.reduce((sum, val) => sum + val, 0) / values.length; return { startValue, endValue, pnl, pnlPercent, maxValue, minValue, avgValue }; }
-// تم حذف دالة createChartUrl لأنها تسبب التعطل
+function createChartUrl(history, periodLabel, pnl) { if (history.length < 2) return null; const chartColor = pnl >= 0 ? 'rgb(75, 192, 75)' : 'rgb(255, 99, 132)'; const chartBgColor = pnl >= 0 ? 'rgba(75, 192, 75, 0.2)' : 'rgba(255, 99, 132, 0.2)'; const labels = history.map(h => h.label); const data = history.map(h => h.total.toFixed(2)); const chartConfig = { type: 'line', data: { labels: labels, datasets: [{ label: 'قيمة المحفظة ($)', data: data, fill: true, backgroundColor: chartBgColor, borderColor: chartColor, tension: 0.1 }] }, options: { title: { display: true, text: `أداء المحفظة - ${periodLabel}` } } }; return `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConfig))}&backgroundColor=white`; }
 
 // =================================================================
 // SECTION 3: FORMATTING AND MESSAGE FUNCTIONS
@@ -322,15 +322,17 @@ bot.use(async (ctx, next) => { if (ctx.from?.id === AUTHORIZED_USER_ID) { await 
 bot.command("start", (ctx) => { const welcomeMessage = `🤖 *أهلاً بك في بوت التحليل المتكامل لمنصة OKX.*\n\n` + `*اضغط على الأزرار أدناه للبدء!*`; ctx.reply(welcomeMessage, { parse_mode: "Markdown", reply_markup: mainKeyboard }); });
 bot.command("settings", async (ctx) => { await sendSettingsMenu(ctx); });
 
-// 🔽🔽🔽 --- الكود المضاف هنا --- 🔽🔽🔽
+// =================================================================
+// ▼▼▼ تم وضع الكود الجديد هنا ▼▼▼
+// =================================================================
 bot.command("fixdb", async (ctx) => {
     // هذا الشرط للأمان، لكي لا يستخدمه أي شخص آخر
     if (ctx.from?.id !== AUTHORIZED_USER_ID) return;
     
-    await ctx.reply("🔧 جاري إصلاح قاعدة البيانات وإنشاء بيانات تاريخية تجريبية...");
+    await ctx.reply("🔧 **إعادة بناء قاعدة البيانات...**\n\nجاري إنشاء بيانات تاريخية وهمية لإعادة إحياء النظام.");
     
     try {
-        // بيانات وهمية للأيام
+        // بيانات وهمية لآخر 30 يوم
         const mockDailyHistory = [];
         for (let i = 30; i >= 0; i--) {
             const date = new Date();
@@ -341,7 +343,7 @@ bot.command("fixdb", async (ctx) => {
             });
         }
         
-        // بيانات وهمية للساعات
+        // بيانات وهمية لآخر 72 ساعة
         const mockHourlyHistory = [];
         for (let i = 72; i >= 0; i--) {
             const date = new Date();
@@ -356,13 +358,15 @@ bot.command("fixdb", async (ctx) => {
         await saveHistory(mockDailyHistory);
         await saveHourlyHistory(mockHourlyHistory);
         
-        await ctx.reply("✅ تم إنشاء بيانات تجريبية بنجاح!\n\nالآن يمكنك استخدام ميزة 'أداء المحفظة' بشكل فوري.");
+        await ctx.reply("✅ **تم الإصلاح بنجاح!**\n\nقاعدة البيانات أصبحت تحتوي على بيانات أولية. جميع الميزات يجب أن تعمل الآن بشكل طبيعي.");
         
     } catch (error) {
-        await ctx.reply(`❌ حدث خطأ أثناء الإصلاح: ${error.message}`);
+        await ctx.reply(`❌ **فشل الإصلاح:**\n${error.message}\n\nيرجى التأكد من أن متغيرات الاتصال بقاعدة البيانات صحيحة.`);
     }
 });
-// 🔼🔼🔼 --- نهاية الكود المضاف --- 🔼🔼🔼
+// =================================================================
+// ▲▲▲ نهاية الكود المضاف ▲▲▲
+// =================================================================
 
 bot.command("pnl", async (ctx) => { const args = ctx.match.trim().split(/\s+/); if (args.length !== 3 || args[0] === '') { return await ctx.reply(`❌ *صيغة غير صحيحة.*\n*مثال:* \`/pnl <سعر الشراء> <سعر البيع> <الكمية>\``, { parse_mode: "Markdown" }); } const [buyPrice, sellPrice, quantity] = args.map(parseFloat); if (isNaN(buyPrice) || isNaN(sellPrice) || isNaN(quantity) || buyPrice <= 0 || sellPrice <= 0 || quantity <= 0) { return await ctx.reply("❌ *خطأ:* تأكد من أن جميع القيم هي أرقام موجبة."); } const investment = buyPrice * quantity; const saleValue = sellPrice * quantity; const pnl = saleValue - investment; const pnlPercent = (investment > 0) ? (pnl / investment) * 100 : 0; const status = pnl >= 0 ? "ربح ✅" : "خسارة 🔻"; const sign = pnl >= 0 ? '+' : ''; const msg = `🧮 *نتيجة حساب الربح والخسارة*\n\n` + `*صافي الربح/الخسارة:* \`${sign}${formatNumber(pnl)}\` (\`${sign}${formatNumber(pnlPercent)}%\`)\n` + `**الحالة النهائية: ${status}**`; await ctx.reply(msg, { parse_mode: "Markdown" }); });
 
@@ -371,65 +375,33 @@ bot.on("callback_query:data", async (ctx) => {
     const data = ctx.callbackQuery.data;
 
     try {
-        // 🔽🔽🔽 --- الكود المعدل هنا --- 🔽🔽🔽
         if (data.startsWith("chart_")) {
             const period = data.split('_')[1];
-            await ctx.editMessageText("⏳ جاري إنشاء تقرير الأداء النصي...");
-            
-            try {
-                let history, periodLabel;
-                
-                if (period === '24h') {
-                    history = await loadHourlyHistory();
-                    periodLabel = "آخر 24 ساعة";
-                } else if (period === '7d') {
-                    history = await loadHistory();
-                    periodLabel = "آخر 7 أيام";
-                } else { // 30d
-                    history = await loadHistory();
-                    periodLabel = "آخر 30 يومًا";
-                }
-
-                if (!history || history.length < 2) {
-                    await ctx.editMessageText("ℹ️ لا توجد بيانات كافية لهذه الفترة. يرجى التأكد من تشغيل البوت لبعض الوقت أو استخدام أمر /fixdb.");
-                    return;
-                }
-
-                const relevantHistory = period === '24h' ? history.slice(-24) : (period === '7d' ? history.slice(-7) : history.slice(-30));
-                
-                if (relevantHistory.length < 2) {
-                    await ctx.editMessageText(`ℹ️ لا توجد بيانات كافية لهذه الفترة (مطلوب نقطتين على الأقل، متوفر: ${relevantHistory.length}).`);
-                    return;
-                }
-
-                const stats = calculatePerformanceStats(relevantHistory);
-                if (!stats) {
-                    await ctx.editMessageText("ℹ️ فشل حساب الإحصائيات. البيانات قد تكون غير صالحة.");
-                    return;
-                }
-
-                const pnlSign = stats.pnl >= 0 ? '+' : '';
-                const emoji = stats.pnl >= 0 ? '🟢⬆️' : '🔴⬇️';
-                
-                const caption = `📊 *تحليل أداء المحفظة | ${periodLabel}*\n\n` +
-                              `📈 *النتيجة:* ${emoji} \`$${pnlSign}${formatNumber(stats.pnl)}\` (\`${pnlSign}${formatNumber(stats.pnlPercent)}%\`)\n` +
-                              `*التغير الصافي: من \`$${formatNumber(stats.startValue)}\` إلى \`$${formatNumber(stats.endValue)}\`*\n\n` +
-                              `📝 *ملخص إحصائيات الفترة:*\n` +
-                              ` ▫️ *أعلى قيمة:* \`$${formatNumber(stats.maxValue)}\`\n` +
-                              ` ▫️ *أدنى قيمة:* \`$${formatNumber(stats.minValue)}\`\n` +
-                              ` ▫️ *متوسط القيمة:* \`$${formatNumber(stats.avgValue)}\`\n\n` +
-                              `*التقرير تم إنشاؤه في: ${new Date().toLocaleString("ar-EG")}*`;
-
-                // إرسال التقرير كنص وتجنب استخدام الصور
-                await ctx.editMessageText(caption, { parse_mode: "Markdown" });
-
-            } catch (error) {
-                console.error("Error in performance report:", error);
-                await ctx.editMessageText(`❌ حدث خطأ فادح أثناء إنشاء التقرير: ${error.message}`);
-            }
+            await ctx.editMessageText("⏳ جاري إنشاء تقرير الأداء...");
+            let history, periodLabel, periodData;
+            if (period === '24h') {
+                history = await loadHourlyHistory();
+                periodLabel = "آخر 24 ساعة";
+                periodData = history.slice(-24).map(h => ({label: new Date(h.label).getHours() + ':00', total: h.total }));
+            } else if (period === '7d') {
+                history = await loadHistory();
+                periodLabel = "آخر 7 أيام";
+                periodData = history.slice(-7).map(h => ({ label: h.date.slice(5), total: h.total }));
+            } else if (period === '30d') {
+                history = await loadHistory();
+                periodLabel = "آخر 30 يومًا";
+                periodData = history.slice(-30).map(h => ({ label: h.date.slice(5), total: h.total }));
+            } else { return; }
+            if (!periodData || periodData.length < 2) { await ctx.editMessageText("ℹ️ لا توجد بيانات كافية لهذه الفترة."); return; }
+            const stats = calculatePerformanceStats(periodData);
+            if (!stats) { await ctx.editMessageText("ℹ️ لا توجد بيانات كافية لهذه الفترة."); return; }
+            const chartUrl = createChartUrl(periodData, periodLabel, stats.pnl);
+            const pnlSign = stats.pnl >= 0 ? '+' : '';
+            const caption = `📊 *تحليل أداء المحفظة | ${periodLabel}*\n\n` + `📈 *النتيجة:* ${stats.pnl >= 0 ? '🟢⬆️' : '🔴⬇️'} \`${pnlSign}${formatNumber(stats.pnl)}\` (\`${pnlSign}${formatNumber(stats.pnlPercent)}%\`)\n` + `*التغير الصافي: من \`$${formatNumber(stats.startValue)}\` إلى \`$${formatNumber(stats.endValue)}\`*\n\n` + `📝 *ملخص إحصائيات الفترة:*\n` + ` ▫️ *أعلى قيمة وصلت لها المحفظة:* \`$${formatNumber(stats.maxValue)}\`\n` + ` ▫️ *أدنى قيمة وصلت لها المحفظة:* \`$${formatNumber(stats.minValue)}\`\n` + ` ▫️ *متوسط قيمة المحفظة:* \`$${formatNumber(stats.avgValue)}\`\n\n` + `*التقرير تم إنشاؤه في: ${new Date().toLocaleDateString("en-GB").replace(/\//g, '.')}*`;
+            await ctx.replyWithPhoto(chartUrl, { caption: caption, parse_mode: "Markdown" });
+            await ctx.deleteMessage();
             return;
         }
-        // 🔼🔼🔼 --- نهاية الكود المعدل --- 🔼🔼🔼
 
         if (data === "publish_report" || data === "ignore_report") {
             const originalMessage = ctx.callbackQuery.message;
