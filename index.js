@@ -1,6 +1,6 @@
 // =================================================================
-// Advanced Analytics Bot - v134.1 (Telegraf Polling FINAL STABLE)
-// Your complete code, fully ported for stability.
+// Advanced Analytics Bot - v134.2 (Enhanced Error Diagnostics)
+// Your complete code, fully ported for stability with better error handling.
 // =================================================================
 
 const express = require("express");
@@ -20,16 +20,66 @@ const AUTHORIZED_USER_ID = parseInt(process.env.AUTHORIZED_USER_ID);
 let waitingState = null;
 
 // =================================================================
-// SECTION 0: OKX API ADAPTER (Your Original Code)
+// SECTION 0: OKX API ADAPTER (MODIFIED FOR BETTER ERROR HANDLING)
 // =================================================================
 class OKXAdapter {
     constructor() { this.name = "OKX"; this.baseURL = "https://www.okx.com"; }
     getHeaders(method, path, body = "") { const timestamp = new Date().toISOString(); const prehash = timestamp + method.toUpperCase() + path + (typeof body === 'object' ? JSON.stringify(body) : body); const sign = crypto.createHmac("sha256", process.env.OKX_API_SECRET_KEY).update(prehash).digest("base64"); return { "OK-ACCESS-KEY": process.env.OKX_API_KEY, "OK-ACCESS-SIGN": sign, "OK-ACCESS-TIMESTAMP": timestamp, "OK-ACCESS-PASSPHRASE": process.env.OKX_API_PASSPHRASE, "Content-Type": "application/json", }; }
-    async getMarketPrices() { try { const tickersRes = await fetch(`${this.baseURL}/api/v5/market/tickers?instType=SPOT`); const tickersJson = await tickersRes.json(); if (tickersJson.code !== '0') { return { error: `فشل جلب أسعار السوق: ${tickersJson.msg}` }; } const prices = {}; if (tickersJson.data) { tickersJson.data.forEach(t => { if (t.instId.endsWith('-USDT')) { const lastPrice = parseFloat(t.last); const openPrice = parseFloat(t.open24h); let change24h = 0; if (openPrice > 0) change24h = (lastPrice - openPrice) / openPrice; prices[t.instId] = { price: lastPrice, open24h: openPrice, change24h, volCcy24h: parseFloat(t.volCcy24h) }; } }); } return prices; } catch (error) { return { error: "خطأ استثنائي عند جلب أسعار السوق." }; } }
-    async getPortfolio(prices) { try { const path = "/api/v5/account/balance"; const res = await fetch(`${this.baseURL}${path}`, { headers: this.getHeaders("GET", path) }); const json = await res.json(); if (json.code !== '0' || !json.data || !json.data[0] || !json.data[0].details) { return { error: `فشل جلب المحفظة: ${json.msg || 'بيانات غير متوقعة'}` }; } let assets = [], total = 0, usdtValue = 0; json.data.details.forEach(asset => { const amount = parseFloat(asset.eq); if (amount > 0) { const instId = `${asset.ccy}-USDT`; const priceData = prices[instId] || { price: (asset.ccy === "USDT" ? 1 : 0), change24h: 0 }; const value = amount * priceData.price; total += value; if (asset.ccy === "USDT") usdtValue = value; if (value >= 1) assets.push({ asset: asset.ccy, price: priceData.price, value, amount, change24h: priceData.change24h }); } }); assets.sort((a, b) => b.value - a.value); return { assets, total, usdtValue }; } catch (e) { return { error: "خطأ في الاتصال بمنصة OKX." }; } }
-    async getBalanceForComparison() { try { const path = "/api/v5/account/balance"; const res = await fetch(`${this.baseURL}${path}`, { headers: this.getHeaders("GET", path) }); const json = await res.json(); if (json.code !== '0' || !json.data || !json.data[0] || !json.data.details) { return null; } const balances = {}; json.data.details.forEach(asset => { const amount = parseFloat(asset.eq); if (amount > 0) balances[asset.ccy] = amount; }); return balances; } catch (e) { return null; } }
+    
+    async getMarketPrices() {
+        try {
+            const tickersRes = await fetch(`${this.baseURL}/api/v5/market/tickers?instType=SPOT`);
+            const tickersJson = await tickersRes.json();
+            if (tickersJson.code !== '0') {
+                return { error: `فشل جلب أسعار السوق [OKX]: ${tickersJson.msg || 'فشل غير معروف'}` };
+            }
+            const prices = {};
+            if (tickersJson.data) { tickersJson.data.forEach(t => { if (t.instId.endsWith('-USDT')) { const lastPrice = parseFloat(t.last); const openPrice = parseFloat(t.open24h); let change24h = 0; if (openPrice > 0) change24h = (lastPrice - openPrice) / openPrice; prices[t.instId] = { price: lastPrice, open24h: openPrice, change24h, volCcy24h: parseFloat(t.volCcy24h) }; } }); }
+            return prices;
+        } catch (error) {
+            console.error("getMarketPrices Error:", error);
+            return { error: `خطأ شبكة عند جلب أسعار السوق: ${error.message}` };
+        }
+    }
+
+    async getPortfolio(prices) {
+        try {
+            const path = "/api/v5/account/balance";
+            const res = await fetch(`${this.baseURL}${path}`, { headers: this.getHeaders("GET", path) });
+            const json = await res.json();
+            if (json.code !== '0' || !json.data || !json.data[0] || !json.data[0].details) {
+                return { error: `فشل جلب المحفظة [OKX]: ${json.msg || 'بيانات غير متوقعة'}` };
+            }
+            let assets = [], total = 0, usdtValue = 0;
+            json.data.details.forEach(asset => { const amount = parseFloat(asset.eq); if (amount > 0) { const instId = `${asset.ccy}-USDT`; const priceData = prices[instId] || { price: (asset.ccy === "USDT" ? 1 : 0), change24h: 0 }; const value = amount * priceData.price; total += value; if (asset.ccy === "USDT") usdtValue = value; if (value >= 1) assets.push({ asset: asset.ccy, price: priceData.price, value, amount, change24h: priceData.change24h }); } });
+            assets.sort((a, b) => b.value - a.value);
+            return { assets, total, usdtValue };
+        } catch (e) {
+            console.error("getPortfolio Error:", e);
+            return { error: `خطأ شبكة عند جلب المحفظة: ${e.message}` };
+        }
+    }
+
+    async getBalanceForComparison() {
+        try {
+            const path = "/api/v5/account/balance";
+            const res = await fetch(`${this.baseURL}${path}`, { headers: this.getHeaders("GET", path) });
+            const json = await res.json();
+            if (json.code !== '0' || !json.data || !json.data[0] || !json.data[0].details) {
+                console.error("getBalanceForComparison Error:", json.msg || 'Invalid data structure');
+                return null;
+            }
+            const balances = {};
+            json.data.details.forEach(asset => { const amount = parseFloat(asset.eq); if (amount > 0) balances[asset.ccy] = amount; });
+            return balances;
+        } catch (e) {
+            console.error("getBalanceForComparison Network Error:", e);
+            return null;
+        }
+    }
 }
 const okxAdapter = new OKXAdapter();
+
 
 // =================================================================
 // SECTION 1: DATABASE AND HELPER FUNCTIONS (Your Original Code)
