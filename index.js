@@ -1,5 +1,5 @@
 // =================================================================
-// Advanced Analytics Bot - v134.1 (Stable - Memory Leak Fixed & Calculator Added)
+// Advanced Analytics Bot - v134.2 (Full Code, Background Services Activated)
 // =================================================================
 
 const express = require("express");
@@ -7,6 +7,7 @@ const { Bot, Keyboard, InlineKeyboard, webhookCallback } = require("grammy");
 const fetch = require("node-fetch");
 const crypto = require("crypto");
 require("dotenv").config();
+// تأكد من أن ملف database.js موجود ويعمل بشكل صحيح
 const { connectDB, getDB } = require("./database.js");
 
 // --- Bot Setup ---
@@ -16,7 +17,6 @@ const PORT = process.env.PORT || 3000;
 const AUTHORIZED_USER_ID = parseInt(process.env.AUTHORIZED_USER_ID);
 
 // --- State Variables ---
-// تم تعديل هذا الجزء لدعم المحادثات المتزامنة مع عدة مستخدمين
 const userStates = {};
 
 // =================================================================
@@ -65,7 +65,7 @@ class OKXAdapter {
             const path = "/api/v5/account/balance";
             const res = await fetch(`${this.baseURL}${path}`, { headers: this.getHeaders("GET", path) });
             const json = await res.json();
-            if (json.code !== '0' || !json.data || !json.data[0] || !json.data[0].details) { return { error: `فشل جلب المحفظة: ${json.msg || 'بيانات غير متوقعة'}` }; }
+            if (json.code !== '0' || !json.data || !json.data[0] || !json.data.details) { return { error: `فشل جلب المحفظة: ${json.msg || 'بيانات غير متوقعة'}` }; }
             let assets = [], total = 0, usdtValue = 0;
             json.data.details.forEach(asset => {
                 const amount = parseFloat(asset.eq);
@@ -88,9 +88,9 @@ class OKXAdapter {
             const path = "/api/v5/account/balance";
             const res = await fetch(`${this.baseURL}${path}`, { headers: this.getHeaders("GET", path) });
             const json = await res.json();
-            if (json.code !== '0' || !json.data || !json.data[0] || !json.data[0].details) { return null; }
+            if (json.code !== '0' || !json.data || !json.data[0] || !json.data.details) { return null; }
             const balances = {};
-            json.data[0].details.forEach(asset => {
+            json.data.details.forEach(asset => {
                 const amount = parseFloat(asset.eq);
                 if (amount > 0) balances[asset.ccy] = amount;
             });
@@ -158,32 +158,16 @@ async function getHistoricalCandles(instId, bar = '1D', limit = 100) {
     let allCandles = [];
     let before = '';
     const maxLimitPerRequest = 100;
-
     try {
         while (allCandles.length < limit) {
             const currentLimit = Math.min(maxLimitPerRequest, limit - allCandles.length);
             const url = `${okxAdapter.baseURL}/api/v5/market/history-candles?instId=${instId}&bar=${bar}&limit=${currentLimit}${before}`;
-            
             const res = await fetch(url);
             const json = await res.json();
-            
-            if (json.code !== '0' || !json.data || json.data.length === 0) {
-                break;
-            }
-
-            const newCandles = json.data.map(c => ({
-                time: parseInt(c[0]),
-                high: parseFloat(c[2]),
-                low: parseFloat(c[3]),
-                close: parseFloat(c[4])
-            }));
-            
+            if (json.code !== '0' || !json.data || json.data.length === 0) { break; }
+            const newCandles = json.data.map(c => ({ time: parseInt(c[0]), high: parseFloat(c[2]), low: parseFloat(c[1]), close: parseFloat(c[2]) }));
             allCandles.push(...newCandles);
-            
-            if (newCandles.length < maxLimitPerRequest) {
-                break;
-            }
-            
+            if (newCandles.length < maxLimitPerRequest) { break; }
             const lastTimestamp = newCandles[newCandles.length - 1].time;
             before = `&before=${lastTimestamp}`;
         }
@@ -198,29 +182,20 @@ async function getAssetPriceExtremes(instId) {
     try {
         const [yearlyCandles, allTimeCandles] = await Promise.all([
             getHistoricalCandles(instId, '1D', 365),
-            getHistoricalCandles(instId, '1M', 240) // 20 years of monthly data
+            getHistoricalCandles(instId, '1M', 240)
         ]);
-
         if (yearlyCandles.length === 0) return null;
-
         const getHighLow = (candles) => {
             if (!candles || candles.length === 0) return { high: 0, low: Infinity };
-            return candles.reduce((acc, candle) => ({
-                high: Math.max(acc.high, candle.high),
-                low: Math.min(acc.low, candle.low)
-            }), { high: 0, low: Infinity });
+            return candles.reduce((acc, candle) => ({ high: Math.max(acc.high, candle.high), low: Math.min(acc.low, candle.low) }), { high: 0, low: Infinity });
         };
-
         const weeklyCandles = yearlyCandles.slice(-7);
         const monthlyCandles = yearlyCandles.slice(-30);
-        
         const formatLow = (low) => low === Infinity ? 0 : low;
-
         const weeklyExtremes = getHighLow(weeklyCandles);
         const monthlyExtremes = getHighLow(monthlyCandles);
         const yearlyExtremes = getHighLow(yearlyCandles);
         const allTimeExtremes = getHighLow(allTimeCandles);
-
         return {
             weekly: { high: weeklyExtremes.high, low: formatLow(weeklyExtremes.low) },
             monthly: { high: monthlyExtremes.high, low: formatLow(monthlyExtremes.low) },
@@ -253,55 +228,28 @@ function createChartUrl(data, type = 'line', title = '', labels = [], dataLabel 
     return `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConfig))}&backgroundColor=white`;
 }
 
-// ========================[ إضافة جديدة: حاسبة الصفقات الاستراتيجية ]========================
-/**
- * دالة لحساب نتائج صفقة افتراضية مع أهداف متعددة ووقف خسارة.
- * @param {object} details - تفاصيل الصفقة.
- * @returns {object} - كائن يحتوي على نتائج الحساب.
- */
 function calculateStrategicTrade(details) {
     const { investment, buyPrice, stopLoss, targets } = details;
-
-    if (!investment || !buyPrice || targets.length === 0 || buyPrice <= 0) {
-        return { error: "مدخلات أساسية غير كافية." };
-    }
-
+    if (!investment || !buyPrice || targets.length === 0 || buyPrice <= 0) return { error: "مدخلات أساسية غير كافية." };
     const initialQuantity = investment / buyPrice;
     let totalValueOnSell = 0;
-
-    // حساب قيمة البيع عند كل هدف
     for (const target of targets) {
         const quantityToSell = initialQuantity * (target.percentage / 100);
         totalValueOnSell += quantityToSell * target.price;
     }
-    
     const totalRealizedProfit = totalValueOnSell - investment;
     const avgSellPrice = targets.length > 0 ? totalValueOnSell / initialQuantity : 0;
     const roi = (totalRealizedProfit / investment) * 100;
-
-    // حساب الخسارة المحتملة ونسبة المخاطرة/العائد
     let potentialLoss = null;
     let riskRewardRatio = null;
-
     if (stopLoss && stopLoss > 0) {
         potentialLoss = (stopLoss - buyPrice) * initialQuantity;
         if (totalRealizedProfit > 0 && potentialLoss < 0) {
-             riskRewardRatio = Math.abs(totalRealizedProfit / potentialLoss);
+            riskRewardRatio = Math.abs(totalRealizedProfit / potentialLoss);
         }
     }
-
-    return {
-        initialQuantity,
-        totalRealizedProfit,
-        roi,
-        potentialLoss,
-        riskRewardRatio,
-        avgSellPrice,
-        error: null
-    };
+    return { initialQuantity, totalRealizedProfit, roi, potentialLoss, riskRewardRatio, avgSellPrice, error: null };
 }
-// ========================[ نهاية الإضافة ]========================
-
 
 // =================================================================
 // SECTION 3: FORMATTING AND MESSAGE FUNCTIONS
@@ -317,12 +265,10 @@ async function formatPortfolioMsg(assets, total, capital) {
     const usdtAsset = assets.find(a => a.asset === "USDT") || { value: 0 };
     const cashPercent = total > 0 ? (usdtAsset.value / total) * 100 : 0;
     const investedPercent = 100 - cashPercent;
-
     const pnl = capital > 0 ? total - capital : 0;
     const pnlPercent = capital > 0 ? (pnl / capital) * 100 : 0;
     const pnlSign = pnl >= 0 ? '+' : '';
     const pnlEmoji = pnl >= 0 ? '🟢⬆️' : '🔴⬇️';
-
     let dailyPnlText = " `لا توجد بيانات كافية`";
     let totalValue24hAgo = 0;
     assets.forEach(asset => {
@@ -330,7 +276,6 @@ async function formatPortfolioMsg(assets, total, capital) {
         else if (asset.change24h !== undefined && asset.price > 0) totalValue24hAgo += asset.amount * (asset.price / (1 + asset.change24h));
         else totalValue24hAgo += asset.value;
     });
-
     if (totalValue24hAgo > 0) {
         const dailyPnl = total - totalValue24hAgo;
         const dailyPnlPercent = (dailyPnl / totalValue24hAgo) * 100;
@@ -338,29 +283,22 @@ async function formatPortfolioMsg(assets, total, capital) {
         const dailyEmoji = dailyPnl >= 0 ? '🟢⬆️' : '🔴⬇️';
         dailyPnlText = ` ${dailyEmoji} \`$${dailySign}${formatNumber(dailyPnl)}\` (\`${dailySign}${formatNumber(dailyPnlPercent)}%\`)`;
     }
-
     let caption = `🧾 *التقرير التحليلي للمحفظة*\n\n`;
     caption += `*بتاريخ: ${new Date().toLocaleString("ar-EG", { timeZone: "Africa/Cairo" })}*\n`;
     caption += `━━━━━━━━━━━━━━━━━━━\n*نظرة عامة على الأداء:*\n`;
     caption += ` ▫️ *القيمة الإجمالية:* \`$${formatNumber(total)}\`\n`;
-    if (capital > 0) {
-        caption += ` ▫️ *رأس المال:* \`$${formatNumber(capital)}\`\n`;
-    }
+    if (capital > 0) { caption += ` ▫️ *رأس المال:* \`$${formatNumber(capital)}\`\n`; }
     caption += ` ▫️ *إجمالي الربح غير المحقق:* ${pnlEmoji} \`$${pnlSign}${formatNumber(pnl)}\` (\`${pnlSign}${formatNumber(pnlPercent)}%\`)\n`;
     caption += ` ▫️ *الأداء اليومي (24س):*${dailyPnlText}\n`;
     caption += ` ▫️ *السيولة:* 💵 نقدي ${formatNumber(cashPercent)}% / 📈 مستثمر ${formatNumber(investedPercent)}%\n`;
     caption += `━━━━━━━━━━━━━━━━━━━━\n*مكونات المحفظة:*\n`;
-
     const cryptoAssets = assets.filter(a => a.asset !== "USDT");
     cryptoAssets.forEach((a, index) => {
         const percent = total > 0 ? (a.value / total) * 100 : 0;
         const position = positions[a.asset];
-
         caption += `\n╭─ *${a.asset}/USDT*\n`;
         caption += `├─ *القيمة الحالية:* \`$${formatNumber(a.value)}\` (*الوزن:* \`${formatNumber(percent)}%\`)\n`;
-        if (position?.avgBuyPrice) {
-            caption += `├─ *متوسط الشراء:* \`$${formatNumber(position.avgBuyPrice, 4)}\`\n`;
-        }
+        if (position?.avgBuyPrice) { caption += `├─ *متوسط الشراء:* \`$${formatNumber(position.avgBuyPrice, 4)}\`\n`; }
         caption += `├─ *سعر السوق:* \`$${formatNumber(a.price, 4)}\`\n`;
         const dailyChangeEmoji = a.change24h >= 0 ? '🟢⬆️' : '🔴⬇️';
         caption += `├─ *الأداء اليومي:* ${dailyChangeEmoji} \`${formatNumber(a.change24h * 100)}%\`\n`;
@@ -371,70 +309,40 @@ async function formatPortfolioMsg(assets, total, capital) {
             const assetPnlEmoji = assetPnl >= 0 ? '🟢' : '🔴';
             const assetPnlSign = assetPnl >= 0 ? '+' : '';
             caption += `╰─ *ربح/خسارة غير محقق:* ${assetPnlEmoji} \`$${assetPnlSign}${formatNumber(assetPnl)}\` (\`${assetPnlSign}${formatNumber(assetPnlPercent)}%\`)`;
-        } else {
-            caption += `╰─ *ربح/خسارة غير محقق:* \`غير مسجل\``;
-        }
-
-        if (index < cryptoAssets.length - 1) {
-            caption += `\n━━━━━━━━━━━━━━━━━━━━`;
-        }
+        } else { caption += `╰─ *ربح/خسارة غير محقق:* \`غير مسجل\``; }
+        if (index < cryptoAssets.length - 1) { caption += `\n━━━━━━━━━━━━━━━━━━━━`; }
     });
-
     caption += `\n\n━━━━━━━━━━━━━━━━━━━━\n*USDT (الرصيد النقدي)* 💵\n`;
     caption += `*القيمة:* \`$${formatNumber(usdtAsset.value)}\` (*الوزن:* \`${formatNumber(cashPercent)}%\`)`;
-    
     return { caption };
 }
 async function formatAdvancedMarketAnalysis(ownedAssets = []) {
     const prices = await okxAdapter.getMarketPrices();
     if (!prices || prices.error) return `❌ فشل جلب بيانات السوق. ${prices.error || ''}`;
-    
     const marketData = Object.entries(prices).map(([instId, data]) => ({ instId, ...data })).filter(d => d.volCcy24h > 10000 && d.change24h !== undefined);
     marketData.sort((a, b) => b.change24h - a.change24h);
     const topGainers = marketData.slice(0, 5);
     const topLosers = marketData.slice(-5).reverse();
     marketData.sort((a, b) => b.volCcy24h - a.volCcy24h);
     const highVolume = marketData.slice(0, 5);
-    
     const ownedSymbols = ownedAssets.map(a => a.asset);
-    
     let msg = `🚀 *تحليل السوق المتقدم (OKX)* | ${new Date().toLocaleDateString("ar-EG")}\n`;
     msg += `━━━━━━━━━━━━━━━━━━━\n`;
-    
     const avgGainerChange = topGainers.length > 0 ? topGainers.reduce((sum, g) => sum + g.change24h, 0) / topGainers.length : 0;
     const avgLoserChange = topLosers.length > 0 ? topLosers.reduce((sum, l) => sum + Math.abs(l.change24h), 0) / topLosers.length : 0;
     let sentimentText = "محايدة 😐\n(هناك فرص للنمو لكن التقلبات عالية)";
-    if (avgGainerChange > avgLoserChange * 1.5) {
-        sentimentText = "صعودي 🟢\n(معنويات السوق إيجابية، والرابحون يتفوقون)";
-    } else if (avgLoserChange > avgGainerChange * 1.5) {
-        sentimentText = "هبوطي 🔴\n(معنويات السوق سلبية، والخاسرون يسيطرون)";
-    }
+    if (avgGainerChange > avgLoserChange * 1.5) { sentimentText = "صعودي 🟢\n(معنويات السوق إيجابية، والرابحون يتفوقون)"; }
+    else if (avgLoserChange > avgGainerChange * 1.5) { sentimentText = "هبوطي 🔴\n(معنويات السوق سلبية، والخاسرون يسيطرون)"; }
     msg += `📊 *معنويات السوق:* ${sentimentText}\n━━━━━━━━━━━━━━━━━━━\n\n`;
-
-    msg += "📈 *أكبر الرابحين (24س):*\n" + topGainers.map(c => {
-        const symbol = c.instId.split('-')[0];
-        const ownedMark = ownedSymbols.includes(symbol) ? ' ✅' : '';
-        return ` - \`${c.instId}\`: \`+${formatNumber(c.change24h * 100)}%\`${ownedMark}`;
-    }).join('\n') + "\n\n";
-
-    msg += "📉 *أكبر الخاسرين (24س):*\n" + topLosers.map(c => {
-        const symbol = c.instId.split('-');
-        const ownedMark = ownedSymbols.includes(symbol) ? ' ✅' : '';
-        return ` - \`${c.instId}\`: \`${formatNumber(c.change24h * 100)}%\`${ownedMark}`;
-    }).join('\n') + "\n\n";
-    
+    msg += "📈 *أكبر الرابحين (24س):*\n" + topGainers.map(c => ` - \`${c.instId}\`: \`+${formatNumber(c.change24h * 100)}%\`${ownedSymbols.includes(c.instId.split('-')[0]) ? ' ✅' : ''}`).join('\n') + "\n\n";
+    msg += "📉 *أكبر الخاسرين (24س):*\n" + topLosers.map(c => ` - \`${c.instId}\`: \`${formatNumber(c.change24h * 100)}%\`${ownedSymbols.includes(c.instId.split('-')) ? ' ✅' : ''}`).join('\n') + "\n\n";
     msg += "📊 *الأعلى في حجم التداول:*\n" + highVolume.map(c => ` - \`${c.instId}\`: \`${(c.volCcy24h / 1e6).toFixed(2)}M\` USDT`).join('\n') + "\n\n";
-    
     let smartRecommendation = "💡 *توصية:* راقب الأصول ذات حجم التداول المرتفع، فهي غالبًا ما تقود اتجاه السوق.";
     const ownedGainers = topGainers.filter(g => ownedSymbols.includes(g.instId.split('-')));
     const ownedLosers = topLosers.filter(l => ownedSymbols.includes(l.instId.split('-')));
-    if (ownedGainers.length > 0) {
-        smartRecommendation = `💡 *توصية ذكية:* عملة *${ownedGainers.instId.split('-')}* التي تملكها ضمن أكبر الرابحين. قد تكون فرصة جيدة لتقييم المركز.`;
-    } else if (ownedLosers.length > 0) {
-        smartRecommendation = `💡 *توصية ذكية:* عملة *${ownedLosers.instId.split('-')}* التي تملكها ضمن أكبر الخاسرين. قد يتطلب الأمر مراجعة وقف الخسارة أو استراتيجيتك.`;
-    }
+    if (ownedGainers.length > 0) { smartRecommendation = `💡 *توصية ذكية:* عملة *${ownedGainers.instId.split('-')}* التي تملكها ضمن أكبر الرابحين. قد تكون فرصة جيدة لتقييم المركز.`; }
+    else if (ownedLosers.length > 0) { smartRecommendation = `💡 *توصية ذكية:* عملة *${ownedLosers.instId.split('-')}* التي تملكها ضمن أكبر الخاسرين. قد يتطلب الأمر مراجعة وقف الخسارة أو استراتيجيتك.`; }
     msg += `${smartRecommendation}`;
-    
     return msg;
 }
 async function formatQuickStats(assets, total, capital) {
@@ -442,26 +350,16 @@ async function formatQuickStats(assets, total, capital) {
     const pnlPercent = capital > 0 ? (pnl / capital) * 100 : 0;
     const statusEmoji = pnl >= 0 ? '🟢' : '🔴';
     const statusText = pnl >= 0 ? 'ربح' : 'خسارة';
-    
     let msg = "⚡ *إحصائيات سريعة*\n\n";
     msg += `💎 *إجمالي الأصول:* \`${assets.filter(a => a.asset !== 'USDT').length}\`\n`;
     msg += `💰 *القيمة الحالية:* \`$${formatNumber(total)}\`\n`;
-    if (capital > 0) {
-        msg += `📈 *نسبة الربح/الخسارة:* \`${formatNumber(pnlPercent)}%\`\n`;
-        msg += `🎯 *الحالة:* ${statusEmoji} ${statusText}\n`;
-    }
-    
+    if (capital > 0) { msg += `📈 *نسبة الربح/الخسارة:* \`${formatNumber(pnlPercent)}%\`\n`; msg += `🎯 *الحالة:* ${statusEmoji} ${statusText}\n`; }
     msg += `\n━━━━━━━━━━━━━━━━━━━━\n*تحليل القمم والقيعان للأصول:*\n`;
-
     const cryptoAssets = assets.filter(a => a.asset !== "USDT");
-    if (cryptoAssets.length === 0) {
-        msg += "\n`لا توجد أصول في محفظتك لتحليلها.`";
-    } else {
-        const assetExtremesPromises = cryptoAssets.map(asset => 
-            getAssetPriceExtremes(`${asset.asset}-USDT`)
-        );
+    if (cryptoAssets.length === 0) { msg += "\n`لا توجد أصول في محفظتك لتحليلها.`"; }
+    else {
+        const assetExtremesPromises = cryptoAssets.map(asset => getAssetPriceExtremes(`${asset.asset}-USDT`));
         const assetExtremesResults = await Promise.all(assetExtremesPromises);
-
         cryptoAssets.forEach((asset, index) => {
             const extremes = assetExtremesResults[index];
             msg += `\n🔸 *${asset.asset}:*\n`;
@@ -470,20 +368,15 @@ async function formatQuickStats(assets, total, capital) {
                 msg += ` *الشهري:* قمة \`$${formatNumber(extremes.monthly.high, 4)}\` / قاع \`$${formatNumber(extremes.monthly.low, 4)}\`\n`;
                 msg += ` *السنوي:* قمة \`$${formatNumber(extremes.yearly.high, 4)}\` / قاع \`$${formatNumber(extremes.yearly.low, 4)}\`\n`;
                 msg += ` *التاريخي:* قمة \`$${formatNumber(extremes.allTime.high, 4)}\` / قاع \`$${formatNumber(extremes.allTime.low, 4)}\``;
-            } else {
-                msg += ` \`تعذر جلب البيانات التاريخية.\``;
-            }
+            } else { msg += ` \`تعذر جلب البيانات التاريخية.\``; }
         });
     }
-
     msg += `\n\n⏰ *آخر تحديث:* ${new Date().toLocaleString("ar-EG", { timeZone: "Africa/Cairo" })}`;
     return msg;
 }
-
 async function formatPerformanceReport(period, periodLabel, history, btcHistory) {
     const stats = calculatePerformanceStats(history);
     if (!stats) return { error: "ℹ️ لا توجد بيانات كافية لهذه الفترة." };
-
     let btcPerformanceText = " `لا تتوفر بيانات`";
     let benchmarkComparison = "";
     if (btcHistory && btcHistory.length >= 2) {
@@ -491,18 +384,12 @@ async function formatPerformanceReport(period, periodLabel, history, btcHistory)
         const btcEnd = btcHistory[btcHistory.length - 1].close;
         const btcChange = (btcEnd - btcStart) / btcStart * 100;
         btcPerformanceText = `\`${btcChange >= 0 ? '+' : ''}${formatNumber(btcChange)}%\``;
-
-        if (stats.pnlPercent > btcChange) {
-            benchmarkComparison = `▪️ *النتيجة:* أداء أعلى من السوق ✅`;
-        } else {
-            benchmarkComparison = `▪️ *النتيجة:* أداء أقل من السوق ⚠️`;
-        }
+        if (stats.pnlPercent > btcChange) { benchmarkComparison = `▪️ *النتيجة:* أداء أعلى من السوق ✅`; }
+        else { benchmarkComparison = `▪️ *النتيجة:* أداء أقل من السوق ⚠️`; }
     }
-
     const chartLabels = history.map(h => period === '24h' ? new Date(h.time).getHours() + ':00' : new Date(h.time).toLocaleDateString('en-GB', {day: '2-digit', month: '2-digit'}));
     const chartDataPoints = history.map(h => h.total);
     const chartUrl = createChartUrl(chartDataPoints, 'line', `أداء المحفظة - ${periodLabel}`, chartLabels, 'قيمة المحفظة ($)');
-
     const pnlSign = stats.pnl >= 0 ? '+' : '';
     const emoji = stats.pnl >= 0 ? '🟢⬆️' : '🔴⬇️';
     let caption = `📊 *تحليل أداء المحفظة | ${periodLabel}*\n\n`;
@@ -516,206 +403,137 @@ async function formatPerformanceReport(period, periodLabel, history, btcHistory)
     caption += `▪️ *أفضل يوم:* \`+${formatNumber(stats.bestDayChange)}%\`\n`;
     caption += `▪️ *أسوأ يوم:* \`${formatNumber(stats.worstDayChange)}%\`\n`;
     caption += `▪️ *مستوى التقلب:* ${stats.volText}`;
-    
     return { caption, chartUrl };
 }
-
-// ========================[ إضافة جديدة: دالة تنسيق تقرير الحاسبة ]========================
-/**
- * تنسق رسالة نصية لعرض نتائج حاسبة الصفقات.
- * @param {object} userInput - المدخلات الأصلية من المستخدم.
- * @param {object} results - النتائج المحسوبة من دالة `calculateStrategicTrade`.
- * @returns {string} - رسالة منسقة جاهزة للإرسال.
- */
 function formatStrategicTradeReport(userInput, results) {
     const { asset, investment, buyPrice, stopLoss, targets } = userInput;
     const { initialQuantity, totalRealizedProfit, roi, potentialLoss, riskRewardRatio, avgSellPrice } = results;
-
     const pnlSign = totalRealizedProfit >= 0 ? '+' : '';
     const emoji = totalRealizedProfit >= 0 ? '✅' : '🔻';
-
     let msg = `*📝 محاكاة صفقة استراتيجية لـ ${asset.toUpperCase()}*\n`;
     msg += `━━━━━━━━━━━━━━━━━━━━\n`;
     msg += `*مدخلات السيناريو:*\n`;
     msg += ` ▪️ **الاستثمار الأولي:** \`$${formatNumber(investment)}\`\n`;
     msg += ` ▪️ **سعر الدخول:** \`$${formatNumber(buyPrice, 4)}\`\n`;
-    if (stopLoss) {
-        msg += ` ▪️ **وقف الخسارة:** \`$${formatNumber(stopLoss, 4)}\`\n`;
-    }
+    if (stopLoss) { msg += ` ▪️ **وقف الخسارة:** \`$${formatNumber(stopLoss, 4)}\`\n`; }
     msg += `\n*🎯 أهداف البيع:*\n`;
-    targets.forEach((t, i) => {
-        msg += `  ${i + 1}. بيع \`${t.percentage}%\` عند سعر \`$${formatNumber(t.price, 4)}\`\n`;
-    });
-
+    targets.forEach((t, i) => { msg += `  ${i + 1}. بيع \`${t.percentage}%\` عند سعر \`$${formatNumber(t.price, 4)}\`\n`; });
     msg += `━━━━━━━━━━━━━━━━━━━━\n`;
     msg += `*📈 النتائج المتوقعة:*\n`;
     msg += ` ▪️ **الكمية المشتراة:** \`${formatNumber(initialQuantity, 6)} ${asset.toUpperCase()}\`\n`;
-    if (targets.length > 1) {
-        msg += ` ▪️ **متوسط سعر البيع:** \`$${formatNumber(avgSellPrice, 4)}\`\n`;
-    }
+    if (targets.length > 1) { msg += ` ▪️ **متوسط سعر البيع:** \`$${formatNumber(avgSellPrice, 4)}\`\n`; }
     msg += ` ▪️ **صافي الربح المتوقع:** \`$${pnlSign}${formatNumber(totalRealizedProfit)}\`\n`;
     msg += ` ▪️ **العائد على الاستثمار (ROI):** \`${pnlSign}${formatNumber(roi)}%\` ${emoji}\n`;
-
     if (potentialLoss !== null) {
         msg += `\n*⚖️ تحليل المخاطر:*\n`;
-        msg += ` ▪️ **الخسارة المحتملة:** \`${formatNumber(potentialLoss)}\`\n`;
-        if (riskRewardRatio !== null) {
-            msg += ` ▪️ **معدل المخاطرة/العائد:** \`1:${formatNumber(riskRewardRatio, 2)}\` (ربح/خسارة)\n`;
-        }
+        msg += ` ▪️ **الخسارة المحتملة:** \`$${formatNumber(potentialLoss)}\`\n`;
+        if (riskRewardRatio !== null) { msg += ` ▪️ **معدل المخاطرة/العائد:** \`1:${formatNumber(riskRewardRatio, 2)}\` (ربح/خسارة)\n`; }
     }
-    
     msg += `━━━━━━━━━━━━━━━━━━━━\n`;
     msg += `*ملاحظة: هذه الحسابات لا تشمل رسوم التداول.*`;
     return msg;
 }
-// ========================[ نهاية الإضافة ]========================
-
 
 // =================================================================
 // SECTION 4: BACKGROUND JOBS & DYNAMIC MANAGEMENT
 // =================================================================
 async function updatePositionAndAnalyze(asset, amountChange, price, newTotalAmount, oldTotalValue) { if (!asset || price === undefined || price === null || isNaN(price)) return { analysisResult: null }; const positions = await loadPositions(); let position = positions[asset]; let analysisResult = { type: 'none', data: {} }; if (amountChange > 0) { const tradeValue = amountChange * price; const entryCapitalPercent = oldTotalValue > 0 ? (tradeValue / oldTotalValue) * 100 : 0; if (!position) { positions[asset] = { totalAmountBought: amountChange, totalCost: tradeValue, avgBuyPrice: price, openDate: new Date().toISOString(), totalAmountSold: 0, realizedValue: 0, highestPrice: price, lowestPrice: price, entryCapitalPercent: entryCapitalPercent, }; } else { position.totalAmountBought += amountChange; position.totalCost += tradeValue; position.avgBuyPrice = position.totalCost / position.totalAmountBought; } analysisResult.type = 'buy'; } else if (amountChange < 0 && position) { const soldAmount = Math.abs(amountChange); position.realizedValue = (position.realizedValue || 0) + (soldAmount * price); position.totalAmountSold = (position.totalAmountSold || 0) + soldAmount; if (newTotalAmount * price < 1) { const totalCost = parseFloat(position.totalCost); const realizedValue = parseFloat(position.realizedValue); const finalPnl = realizedValue - totalCost; const finalPnlPercent = totalCost > 0 ? (finalPnl / totalCost) * 100 : 0; const closeDate = new Date(); const openDate = new Date(position.openDate); const durationDays = (closeDate.getTime() - openDate.getTime()) / (1000 * 60 * 60 * 24); const avgSellPrice = position.totalAmountSold > 0 ? position.realizedValue / position.totalAmountSold : 0; const closeReportData = { asset, pnl: finalPnl, pnlPercent: finalPnlPercent, durationDays, avgBuyPrice: position.avgBuyPrice, avgSellPrice, highestPrice: position.highestPrice, lowestPrice: position.lowestPrice, entryCapitalPercent: position.entryCapitalPercent, exitQuantityPercent: 100 }; await saveClosedTrade(closeReportData); analysisResult = { type: 'close', data: closeReportData }; delete positions[asset]; } else { analysisResult.type = 'sell'; } } await savePositions(positions); analysisResult.data.position = positions[asset] || position; return { analysisResult }; }
-async function monitorBalanceChanges() { try { await sendDebugMessage("Checking balance changes..."); const previousState = await loadBalanceState(); const previousBalances = previousState.balances || {}; const oldTotalValue = previousState.totalValue || 0; const oldUsdtValue = previousBalances['USDT'] || 0; const currentBalance = await okxAdapter.getBalanceForComparison(); if (!currentBalance) { await sendDebugMessage("Could not fetch current balance."); return; } const prices = await okxAdapter.getMarketPrices(); if (!prices || prices.error) { await sendDebugMessage("Could not fetch market prices."); return; } const { assets: newAssets, total: newTotalValue, usdtValue: newUsdtValue, error } = await okxAdapter.getPortfolio(prices); if (error || newTotalValue === undefined) { await sendDebugMessage(`Portfolio fetch error: ${error}`); return; } if (Object.keys(previousBalances).length === 0) { await sendDebugMessage("Initializing first balance state."); await saveBalanceState({ balances: currentBalance, totalValue: newTotalValue }); return; } const allAssets = new Set([...Object.keys(previousBalances), ...Object.keys(currentBalance)]); let stateNeedsUpdate = false; for (const asset of allAssets) { if (asset === 'USDT') continue; const prevAmount = previousBalances[asset] || 0; const currAmount = currentBalance[asset] || 0; const difference = currAmount - prevAmount; const priceData = prices[`${asset}-USDT`]; if (!priceData || !priceData.price || isNaN(priceData.price) || Math.abs(difference * priceData.price) < 1) continue; await sendDebugMessage(`Detected change for ${asset}: ${difference}`); stateNeedsUpdate = true; const { analysisResult } = await updatePositionAndAnalyze(asset, difference, priceData.price, currAmount, oldTotalValue); if (analysisResult.type === 'none') continue; const tradeValue = Math.abs(difference) * priceData.price; const newAssetData = newAssets.find(a => a.asset === asset); const newAssetValue = newAssetData ? newAssetData.value : 0; const newAssetWeight = newTotalValue > 0 ? (newAssetValue / newTotalValue) * 100 : 0; const newCashPercent = newTotalValue > 0 ? (newUsdtValue / newTotalValue) * 100 : 0; const baseDetails = { asset, price: priceData.price, amountChange: difference, tradeValue, oldTotalValue, newAssetWeight, newUsdtValue, newCashPercent, oldUsdtValue, position: analysisResult.data.position }; const settings = await loadSettings(); let privateMessage, publicMessage; if (analysisResult.type === 'buy') { privateMessage = formatPrivateBuy(baseDetails); publicMessage = formatPublicBuy(baseDetails); await bot.api.sendMessage(AUTHORIZED_USER_ID, privateMessage, { parse_mode: "Markdown" }); if (settings.autoPostToChannel) { await bot.api.sendMessage(process.env.TARGET_CHANNEL_ID, publicMessage, { parse_mode: "Markdown" }); } } else if (analysisResult.type === 'sell') { privateMessage = formatPrivateSell(baseDetails); publicMessage = formatPublicSell(baseDetails); await bot.api.sendMessage(AUTHORIZED_USER_ID, privateMessage, { parse_mode: "Markdown" }); if (settings.autoPostToChannel) {
-    // الكود هنا غير مكتمل في النسخة الأصلية
-} } } } catch (e) { console.error("Error in monitorBalanceChanges:", e); } }
-
+async function monitorBalanceChanges() { try { await sendDebugMessage("Checking balance changes..."); const previousState = await loadBalanceState(); const previousBalances = previousState.balances || {}; const oldTotalValue = previousState.totalValue || 0; const oldUsdtValue = previousBalances['USDT'] || 0; const currentBalance = await okxAdapter.getBalanceForComparison(); if (!currentBalance) { await sendDebugMessage("Could not fetch current balance."); return; } const prices = await okxAdapter.getMarketPrices(); if (!prices || prices.error) { await sendDebugMessage("Could not fetch market prices."); return; } const { assets: newAssets, total: newTotalValue, usdtValue: newUsdtValue, error } = await okxAdapter.getPortfolio(prices); if (error || newTotalValue === undefined) { await sendDebugMessage(`Portfolio fetch error: ${error}`); return; } if (Object.keys(previousBalances).length === 0) { await sendDebugMessage("Initializing first balance state."); await saveBalanceState({ balances: currentBalance, totalValue: newTotalValue }); return; } const allAssets = new Set([...Object.keys(previousBalances), ...Object.keys(currentBalance)]); for (const asset of allAssets) { if (asset === 'USDT') continue; const prevAmount = previousBalances[asset] || 0; const currAmount = currentBalance[asset] || 0; const difference = currAmount - prevAmount; const priceData = prices[`${asset}-USDT`]; if (!priceData || !priceData.price || isNaN(priceData.price) || Math.abs(difference * priceData.price) < 1) continue; await sendDebugMessage(`Detected change for ${asset}: ${difference}`); const { analysisResult } = await updatePositionAndAnalyze(asset, difference, priceData.price, currAmount, oldTotalValue); if (analysisResult.type === 'none') continue; const tradeValue = Math.abs(difference) * priceData.price; const newAssetData = newAssets.find(a => a.asset === asset); const newAssetValue = newAssetData ? newAssetData.value : 0; const newAssetWeight = newTotalValue > 0 ? (newAssetValue / newTotalValue) * 100 : 0; const newCashPercent = newTotalValue > 0 ? (newUsdtValue / newTotalValue) * 100 : 0; const baseDetails = { asset, price: priceData.price, amountChange: difference, tradeValue, oldTotalValue, newAssetWeight, newUsdtValue, newCashPercent, oldUsdtValue, position: analysisResult.data.position }; const settings = await loadSettings(); let privateMessage, publicMessage; if (analysisResult.type === 'buy') { privateMessage = formatPrivateBuy(baseDetails); publicMessage = formatPublicBuy(baseDetails); await bot.api.sendMessage(AUTHORIZED_USER_ID, privateMessage, { parse_mode: "Markdown" }); if (settings.autoPostToChannel && process.env.TARGET_CHANNEL_ID) { await bot.api.sendMessage(process.env.TARGET_CHANNEL_ID, publicMessage, { parse_mode: "Markdown" }); } } else if (analysisResult.type === 'sell') { privateMessage = formatPrivateSell(baseDetails); publicMessage = formatPublicSell(baseDetails); await bot.api.sendMessage(AUTHORIZED_USER_ID, privateMessage, { parse_mode: "Markdown" }); if (settings.autoPostToChannel && process.env.TARGET_CHANNEL_ID) { await bot.api.sendMessage(process.env.TARGET_CHANNEL_ID, publicMessage, { parse_mode: "Markdown" }); } } } await saveBalanceState({ balances: currentBalance, totalValue: newTotalValue }); } catch (e) { console.error("Error in monitorBalanceChanges:", e); await sendDebugMessage(`Error in monitorBalanceChanges: ${e.message}`); } }
 
 // =================================================================
-// SECTION 5: BOT COMMANDS & INTERACTIVITY (قسم جديد للأوامر التفاعلية)
+// SECTION 5: BOT COMMANDS & INTERACTIVITY
 // =================================================================
-
-// معالج أمر الحاسبة الاستراتيجية
 bot.command("calculate", (ctx) => {
     const userId = ctx.from.id;
     userStates[userId] = { step: 'asset', data: { targets: [] } };
     ctx.reply("أهلاً بك في حاسبة الصفقات الاستراتيجية.\n\n*الخطوة 1 من 5:*\nالرجاء إدخال رمز العملة (مثال: BTC).", { parse_mode: "Markdown" });
 });
 
-// المعالج الرئيسي للرسائل للتعامل مع المحادثات الجارية
 bot.on("message:text", async (ctx) => {
     const userId = ctx.from.id;
     const state = userStates[userId];
     const text = ctx.message.text;
-
-    // إذا لم يكن المستخدم في محادثة، تجاهل الرسالة
     if (!state) return;
-
-    if (text.toLowerCase() === '/cancel') {
-        delete userStates[userId];
-        return ctx.reply("تم إلغاء العملية.");
-    }
-
+    if (text.toLowerCase() === '/cancel') { delete userStates[userId]; return ctx.reply("تم إلغاء العملية."); }
     try {
         switch (state.step) {
             case 'asset':
-                state.data.asset = text.toUpperCase();
-                state.step = 'investment';
+                state.data.asset = text.toUpperCase(); state.step = 'investment';
                 await ctx.reply(`*الخطوة 2 من 5:*\nما هو المبلغ الذي تخطط لاستثماره بالـ USDT في عملة ${state.data.asset}؟ (مثال: 1000)`, { parse_mode: "Markdown" });
                 break;
-
             case 'investment':
-                const investment = parseFloat(text);
-                if (isNaN(investment) || investment <= 0) {
-                    return await ctx.reply("قيمة غير صالحة. الرجاء إدخال رقم موجب.");
-                }
-                state.data.investment = investment;
-                state.step = 'buyPrice';
+                const investment = parseFloat(text); if (isNaN(investment) || investment <= 0) { return await ctx.reply("قيمة غير صالحة. الرجاء إدخال رقم موجب."); }
+                state.data.investment = investment; state.step = 'buyPrice';
                 await ctx.reply(`*الخطوة 3 من 5:*\nما هو سعر الشراء الذي تستهدفه؟`, { parse_mode: "Markdown" });
                 break;
-
             case 'buyPrice':
-                const buyPrice = parseFloat(text);
-                if (isNaN(buyPrice) || buyPrice <= 0) {
-                    return await ctx.reply("سعر غير صالح. الرجاء إدخال رقم موجب.");
-                }
-                state.data.buyPrice = buyPrice;
-                state.step = 'stopLoss';
+                const buyPrice = parseFloat(text); if (isNaN(buyPrice) || buyPrice <= 0) { return await ctx.reply("سعر غير صالح. الرجاء إدخال رقم موجب."); }
+                state.data.buyPrice = buyPrice; state.step = 'stopLoss';
                 await ctx.reply(`*الخطوة 4 من 5:*\nما هو سعر وقف الخسارة؟ (اكتب '0' أو 'تخطي' إذا كنت لا تريد تحديده)`, { parse_mode: "Markdown" });
                 break;
-
             case 'stopLoss':
-                const stopLoss = parseFloat(text);
-                if (isNaN(stopLoss)) {
-                    return await ctx.reply("سعر غير صالح. الرجاء إدخال رقم أو '0'.");
-                }
-                state.data.stopLoss = stopLoss > 0 ? stopLoss : null;
-                state.step = 'targets';
+                const stopLoss = parseFloat(text); if (isNaN(stopLoss)) { return await ctx.reply("سعر غير صالح. الرجاء إدخال رقم أو '0'."); }
+                state.data.stopLoss = stopLoss > 0 ? stopLoss : null; state.step = 'targets';
                 await ctx.reply(`*الخطوة 5 من 5:*\nالآن، لنحدد أهداف البيع.\n\nأدخل هدفك الأول بالصيغة التالية: *السعر,النسبة%*\nمثال: \`72000,50\` (يعني بيع 50% من الكمية عند سعر 72000$).`, { parse_mode: "Markdown" });
                 break;
-            
             case 'targets':
                 if (text.toLowerCase() === 'تم' || text.toLowerCase() === 'done') {
                     const totalPercentage = state.data.targets.reduce((sum, t) => sum + t.percentage, 0);
-                    if (totalPercentage !== 100) {
-                        return await ctx.reply(`إجمالي النسب المئوية لأهدافك هو ${totalPercentage}%. يجب أن يكون المجموع 100%. الرجاء إعادة إدخال الأهداف من جديد أو كتابة /cancel للبدء من جديد.`);
-                    }
-                    if (state.data.targets.length === 0) {
-                         return await ctx.reply(`يجب أن تضيف هدفًا واحدًا على الأقل.`);
-                    }
-                    // كل شيء صحيح، قم بالحساب والرد
+                    if (totalPercentage !== 100) { return await ctx.reply(`إجمالي النسب المئوية لأهدافك هو ${totalPercentage}%. يجب أن يكون المجموع 100%. الرجاء إعادة إدخال الأهداف من جديد أو كتابة /cancel للبدء من جديد.`); }
+                    if (state.data.targets.length === 0) { return await ctx.reply(`يجب أن تضيف هدفًا واحدًا على الأقل.`); }
                     const results = calculateStrategicTrade(state.data);
-                    if (results.error) {
-                         await ctx.reply(`حدث خطأ: ${results.error}`);
-                    } else {
-                        const report = formatStrategicTradeReport(state.data, results);
-                        await ctx.reply(report, { parse_mode: "Markdown" });
-                    }
-                    delete userStates[userId]; // إنهاء المحادثة
-                    return;
+                    if (results.error) { await ctx.reply(`حدث خطأ: ${results.error}`); }
+                    else { const report = formatStrategicTradeReport(state.data, results); await ctx.reply(report, { parse_mode: "Markdown" }); }
+                    delete userStates[userId]; return;
                 }
-
-                const parts = text.split(',');
-                if (parts.length !== 2) {
-                    return await ctx.reply("صيغة غير صحيحة. الرجاء استخدام الصيغة: `السعر,النسبة%`\nمثال: `72000,50`");
-                }
-                const price = parseFloat(parts[0]);
-                const percentage = parseFloat(parts[1]);
-
-                if (isNaN(price) || isNaN(percentage) || price <= 0 || percentage <= 0 || percentage > 100) {
-                    return await ctx.reply("قيم غير صالحة. تأكد من أن السعر والنسبة أرقام موجبة، وأن النسبة لا تتجاوز 100.");
-                }
-
+                const parts = text.split(','); if (parts.length !== 2) { return await ctx.reply("صيغة غير صحيحة. الرجاء استخدام الصيغة: `السعر,النسبة%`\nمثال: `72000,50`"); }
+                const price = parseFloat(parts[0]); const percentage = parseFloat(parts[1]);
+                if (isNaN(price) || isNaN(percentage) || price <= 0 || percentage <= 0 || percentage > 100) { return await ctx.reply("قيم غير صالحة. تأكد من أن السعر والنسبة أرقام موجبة، وأن النسبة لا تتجاوز 100."); }
                 state.data.targets.push({ price, percentage });
                 const currentTotalPercentage = state.data.targets.reduce((sum, t) => sum + t.percentage, 0);
-
                 let replyMsg = `تمت إضافة الهدف: بيع ${percentage}% عند سعر $${price}.\n`;
                 replyMsg += `*الإجمالي الحالي: ${currentTotalPercentage}%*\n\n`;
                 replyMsg += "أضف هدفًا آخر بنفس الصيغة، أو اكتب *'تم'* للانتهاء وحساب النتائج.";
-                
                 await ctx.reply(replyMsg, { parse_mode: "Markdown" });
                 break;
         }
-    } catch (e) {
-        console.error("Error in conversational handler:", e);
-        delete userStates[userId];
-        await ctx.reply("حدث خطأ غير متوقع. تم إنهاء المحادثة.");
-    }
+    } catch (e) { console.error("Error in conversational handler:", e); delete userStates[userId]; await ctx.reply("حدث خطأ غير متوقع. تم إنهاء المحادثة."); }
 });
 
-
 // =================================================================
-// SECTION 6: SERVER INITIALIZATION
+// SECTION 6: SERVER INITIALIZATION & BACKGROUND TASKS
 // =================================================================
-
-// باقي أوامر البوت مثل /start يمكن إضافتها هنا
-
-// بدء الخادم
 (async () => {
     try {
-        await connectDB(); // الاتصال بقاعدة البيانات
+        await connectDB();
         console.log("Database connected successfully.");
 
+        if (!process.env.SERVER_URL) {
+            throw new Error("SERVER_URL environment variable is not set.");
+        }
+
+        const secretPath = bot.token;
         app.use(express.json());
-        app.use(webhookCallback(bot, "express"));
+        app.use(`/${secretPath}`, webhookCallback(bot, "express"));
+
+        await bot.api.setWebhook(`${process.env.SERVER_URL}/${secretPath}`, {
+            allowed_updates: ["message", "callback_query"]
+        });
+        console.log(`Webhook set to ${process.env.SERVER_URL}/${secretPath}`);
 
         app.listen(PORT, () => {
-            console.log(`Bot listening on port ${PORT}`);
+            console.log(`Bot listening for webhooks on port ${PORT}`);
         });
 
-        // قم بإلغاء التعليق عن هذا السطر إذا كنت تريد استخدام long polling بدلاً من webhooks
-        // bot.start(); 
+        const MONITOR_INTERVAL = 5 * 60 * 1000; // 5 minutes
+        setInterval(async () => {
+            console.log("Running scheduled balance check...");
+            await monitorBalanceChanges();
+        }, MONITOR_INTERVAL);
+        console.log("Balance monitoring service has started.");
 
     } catch (e) {
         console.error("Failed to start the bot:", e);
+        process.exit(1);
     }
 })();
