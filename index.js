@@ -1,5 +1,5 @@
 // =================================================================
-// Advanced Analytics Bot - v129.1 (Final Report Order)
+// Advanced Analytics Bot - v133 (Final Report Order Adjustment)
 // =================================================================
 
 const express = require("express");
@@ -211,14 +211,18 @@ async function formatPortfolioMsg(assets, total, capital) {
         const position = positions[a.asset];
 
         caption += `\n╭─ *${a.asset}/USDT*\n`;
-        // START: Reordered Block
+        // --- START: Reordered Section ---
         caption += `├─ *القيمة الحالية:* \`$${formatNumber(a.value)}\` (*الوزن:* \`${formatNumber(percent)}%\`)\n`;
+        
         if (position?.avgBuyPrice) {
             caption += `├─ *متوسط الشراء:* \`$${formatNumber(position.avgBuyPrice, 4)}\`\n`;
         }
+
         caption += `├─ *سعر السوق:* \`$${formatNumber(a.price, 4)}\`\n`;
+        
         const dailyChangeEmoji = a.change24h >= 0 ? '🟢⬆️' : '🔴⬇️';
         caption += `├─ *الأداء اليومي:* ${dailyChangeEmoji} \`${formatNumber(a.change24h * 100)}%\`\n`;
+
         if (position?.avgBuyPrice > 0) {
             const totalCost = position.avgBuyPrice * a.amount;
             const assetPnl = a.value - totalCost;
@@ -229,7 +233,7 @@ async function formatPortfolioMsg(assets, total, capital) {
         } else {
             caption += `╰─ *ربح/خسارة غير محقق:* \`غير مسجل\``;
         }
-        // END: Reordered Block
+        // --- END: Reordered Section ---
 
         if (index < cryptoAssets.length - 1) {
             caption += `\n━━━━━━━━━━━━━━━━━━━━`;
@@ -241,7 +245,6 @@ async function formatPortfolioMsg(assets, total, capital) {
     
     return { caption };
 }
-
 async function formatAdvancedMarketAnalysis(ownedAssets = []) {
     const prices = await okxAdapter.getMarketPrices();
     if (!prices || prices.error) return `❌ فشل جلب بيانات السوق. ${prices.error || ''}`;
@@ -366,7 +369,7 @@ async function formatDailyCopyReport() {
         const resultEmoji = trade.pnlPercent >= 0 ? '🔼' : '🔽';
         report += `🔸اسم العملة: ${trade.asset}\n`;
         report += `🔸 نسبة الدخول من رأس المال: ${formatNumber(trade.entryCapitalPercent)}%\n`;
-        report += `🔸 متوسط سعر الشراء: ${formatNumber(trade.avgBuyPrice, 4)}\n`;
+        report += `🔸 متوسط سعر الشراء: ${formatNumber(trade.avgBuyPrice, 4)}\`\n`;
         report += `🔸 سعر الخروج: ${formatNumber(trade.avgSellPrice, 4)}\n`;
         report += `🔸 نسبة الخروج من الكمية: ${formatNumber(trade.exitQuantityPercent)}%\n`;
         report += `🔸 النتيجة: ${trade.pnlPercent >= 0 ? '+' : ''}${formatNumber(trade.pnlPercent)}% ${resultEmoji}\n\n`;
