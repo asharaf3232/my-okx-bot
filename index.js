@@ -1,5 +1,5 @@
 // =================================================================
-// Advanced Analytics Bot - v134.1 (Robust Coin Info)
+// Advanced Analytics Bot - v134.1 (Robust Coin Info & Smart PNL)
 // =================================================================
 
 const express = require("express");
@@ -536,43 +536,37 @@ bot.command("start", (ctx) => { const welcomeMessage = `🤖 *أهلاً بك ف
 bot.command("settings", async (ctx) => { await sendSettingsMenu(ctx); });
 
 // =============================================================
-// ===== تم تعديل هذه الدالة بالكامل لإصلاح الحاسبة =====
+// ===== الحاسبة الذكية الجديدة التي تعمل بالأزرار =====
 // =============================================================
 bot.command("pnl", async (ctx) => {
-    // نحصل على نص الرسالة الكامل ونزيل منه الأمر للوصول إلى الأرقام فقط
-    const text = ctx.message.text || '';
-    const argsString = text.substring(text.indexOf(' ') + 1);
-    const args = argsString.trim().split(/\s+/);
+    await ctx.reply("⏳ جاري جلب أصولك المفتوحة...");
+    try {
+        const prices = await okxAdapter.getMarketPrices();
+        if (!prices || prices.error) throw new Error(prices.error || `فشل جلب أسعار السوق.`);
 
-    // تحقق من أن المستخدم أدخل 3 أرقام بالضبط
-    if (args.length !== 3) {
-        return await ctx.reply(
-            `❌ *صيغة غير صحيحة.*\n*مثال:* \`/pnl <سعر الشراء> <سعر البيع> <الكمية>\`\n\n*مثلاً: /pnl 100 120 50*`,
-            { parse_mode: "Markdown" }
-        );
+        const { assets, error } = await okxAdapter.getPortfolio(prices);
+        if (error) throw new Error(error);
+
+        const cryptoAssets = assets.filter(a => a.asset !== "USDT" && a.value >= 1);
+
+        if (cryptoAssets.length === 0) {
+            return await ctx.reply("ℹ️ لا توجد لديك أي أصول مفتوحة حاليًا لحساب أرباحها.");
+        }
+
+        const keyboard = new InlineKeyboard();
+        cryptoAssets.forEach(asset => {
+            keyboard.text(`📊 حساب لـ ${asset.asset}`, `pnl_calc_${asset.asset}`).row();
+        });
+
+        await ctx.reply("🧮 *الحاسبة الذكية للربح والخسارة*\n\nاختر أصلاً من القائمة أدناه لحساب ربحك/خسارتك غير المحققة بناءً على متوسط شرائك المحفوظ.", {
+            parse_mode: "Markdown",
+            reply_markup: keyboard
+        });
+
+    } catch (e) {
+        console.error("Error in smart /pnl command:", e);
+        await ctx.reply(`❌ حدث خطأ أثناء جلب أصولك: ${e.message}`);
     }
-
-    const [buyPrice, sellPrice, quantity] = args.map(parseFloat);
-
-    if (isNaN(buyPrice) || isNaN(sellPrice) || isNaN(quantity) || buyPrice <= 0 || sellPrice <= 0 || quantity <= 0) {
-        return await ctx.reply("❌ *خطأ:* تأكد من أن جميع القيم هي أرقام موجبة وصحيحة.");
-    }
-
-    const investment = buyPrice * quantity;
-    const saleValue = sellPrice * quantity;
-    const pnl = saleValue - investment;
-    const pnlPercent = (investment > 0) ? (pnl / investment) * 100 : 0;
-    const status = pnl >= 0 ? "ربح ✅" : "خسارة 🔻";
-    const sign = pnl >= 0 ? '+' : '';
-
-    const msg = `🧮 *نتيجة حساب الربح والخسارة*\n\n` +
-        ` ▪️ *إجمالي تكلفة الشراء:* \`$${formatNumber(investment)}\`\n` +
-        ` ▪️ *إجمالي قيمة البيع:* \`$${formatNumber(saleValue)}\`\n` +
-        `━━━━━━━━━━━━━━━━━━━━\n` +
-        `*صافي الربح/الخسارة:* \`${sign}${formatNumber(pnl)}\` (\`${sign}${formatNumber(pnlPercent)}%\`)\n` +
-        `**الحالة النهائية: ${status}**`;
-
-    await ctx.reply(msg, { parse_mode: "Markdown" });
 });
 
 
@@ -581,6 +575,63 @@ bot.on("callback_query:data", async (ctx) => {
     const data = ctx.callbackQuery.data;
 
     try {
+        // =============================================================
+        // ===== معالج زر الحاسبة الذكية (الجزء المضاف) =====
+        // =============================================================
+        if (data.startsWith("pnl_calc_")) {
+            const assetSymbol = data.split('_')[2];
+            await ctx.editMessageText(`⏳ جاري حساب الربح/الخسارة لـ *${assetSymbol}*...`, { parse_mode: "Markdown" });
+
+            try {
+                // جلب كل البيانات المطلوبة مرة واحدة
+                const [positions, prices] = await Promise.all([
+                    loadPositions(),
+                    okxAdapter.getMarketPrices()
+                ]);
+
+                if (!prices || prices.error) throw new Error('فشل في جلب أسعار السوق.');
+                
+                const { assets, error } = await okxAdapter.getPortfolio(prices);
+                if (error) throw new Error(error);
+
+                const position = positions[assetSymbol];
+                const currentAsset = assets.find(a => a.asset === assetSymbol);
+
+                if (!position || !position.avgBuyPrice) {
+                    return await ctx.editMessageText(`❌ لا يوجد متوسط سعر شراء محفوظ لعملة *${assetSymbol}*. لا يمكن الحساب.`, { parse_mode: "Markdown" });
+                }
+                if (!currentAsset) {
+                    return await ctx.editMessageText(`❌ لم يتم العثور على عملة *${assetSymbol}* في محفظتك الحالية.`, { parse_mode: "Markdown" });
+                }
+
+                const avgBuyPrice = position.avgBuyPrice;
+                const currentPrice = currentAsset.price;
+                const amount = currentAsset.amount;
+                
+                const investment = avgBuyPrice * amount;
+                const currentValue = currentPrice * amount;
+                const pnl = currentValue - investment;
+                const pnlPercent = (investment > 0) ? (pnl / investment) * 100 : 0;
+                
+                const status = pnl >= 0 ? "ربح ✅" : "خسارة 🔻";
+                const sign = pnl >= 0 ? '+' : '';
+
+                const msg = `🧮 *النتيجة لـ ${assetSymbol}*\n\n` +
+                    ` ▪️ *متوسط سعر الشراء:* \`$${formatNumber(avgBuyPrice, 4)}\`\n` +
+                    ` ▪️ *السعر الحالي للسوق:* \`$${formatNumber(currentPrice, 4)}\`\n` +
+                    ` ▪️ *الكمية المملوكة:* \`${formatNumber(amount, 6)}\`\n` +
+                    `━━━━━━━━━━━━━━━━━━━━\n` +
+                    `*💰 الربح/الخسارة غير المحقق:*\n` +
+                    `\`${sign}${formatNumber(pnl)}\` (\`${sign}${formatNumber(pnlPercent)}%\`) ${status}`;
+
+                await ctx.editMessageText(msg, { parse_mode: "Markdown" });
+
+            } catch(e) {
+                await ctx.editMessageText(`❌ حدث خطأ أثناء الحساب: ${e.message}`);
+            }
+            return; // إنهاء الدالة هنا بعد معالجة زر الحاسبة
+        }
+
         if (data.startsWith("chart_")) {
             const period = data.split('_')[1];
             await ctx.editMessageText("⏳ جاري إنشاء تقرير الأداء المتقدم...");
@@ -762,7 +813,7 @@ bot.on("message:text", async (ctx) => {
                     const historicalPerfResult = results[2];
                     const techAnalysisResult = results[3];
                     
-                    if (detailsResult.status === 'rejected' || (detailsResult.status === 'fulfilled' && detailsResult.value.error)) {
+                    if (detailsResult.status === 'rejected' || (detailsResult.status === 'fulfilled' && detailsResult.value.error)) {
                         const errorMsg = detailsResult.reason?.message || detailsResult.value?.error || "فشل جلب البيانات الأساسية للعملة.";
                         throw new Error(errorMsg);
                     }
@@ -929,7 +980,9 @@ bot.on("message:text", async (ctx) => {
             await ctx.reply("✍️ *لضبط تنبيه سعر، استخدم الصيغة:*\n`BTC > 50000`", { parse_mode: "Markdown" });
             break;
         case "🧮 حاسبة الربح والخسارة":
-            await ctx.reply("✍️ لحساب الربح/الخسارة، استخدم أمر `/pnl` بالصيغة التالية:\n`/pnl <سعر الشراء> <سعر البيع> <الكمية>`", {parse_mode: "Markdown"});
+            // عند الضغط على الزر، سيتم الآن استدعاء الأمر /pnl الذي يعرض الحاسبة الذكية
+            await bot.handleUpdate(ctx.update);
+            await ctx.reply("يرجى استخدام الأمر /pnl لعرض الحاسبة الذكية.");
             break;
     }
 });
