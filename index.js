@@ -1,5 +1,5 @@
 // =================================================================
-// Advanced Analytics Bot - v134 (High/Low Stats Feature)
+// Advanced Analytics Bot - v129 (Professional Report Design)
 // =================================================================
 
 const express = require("express");
@@ -135,92 +135,13 @@ async function sendDebugMessage(message) { const settings = await loadSettings()
 // SECTION 2: DATA PROCESSING FUNCTIONS
 // =================================================================
 async function getInstrumentDetails(instId) { try { const tickerRes = await fetch(`${okxAdapter.baseURL}/api/v5/market/ticker?instId=${instId.toUpperCase()}`); const tickerJson = await tickersRes.json(); if (tickerJson.code !== '0' || !tickerJson.data[0]) return { error: `لم يتم العثور على العملة.` }; const tickerData = tickerJson.data[0]; return { price: parseFloat(tickerData.last), high24h: parseFloat(tickerData.high24h), low24h: parseFloat(tickerData.low24h), vol24h: parseFloat(tickerData.volCcy24h), }; } catch (e) { return { error: "خطأ في الاتصال بالمنصة." }; } }
-
-async function getHistoricalCandles(instId, bar = '1D', limit = 100) {
-    let allCandles = [];
-    let before = '';
-    const maxLimitPerRequest = 100;
-
-    try {
-        while (allCandles.length < limit) {
-            const currentLimit = Math.min(maxLimitPerRequest, limit - allCandles.length);
-            const url = `${okxAdapter.baseURL}/api/v5/market/history-candles?instId=${instId}&bar=${bar}&limit=${currentLimit}${before}`;
-            
-            const res = await fetch(url);
-            const json = await res.json();
-            
-            if (json.code !== '0' || !json.data || json.data.length === 0) {
-                break; // Stop if there's an error or no more data
-            }
-
-            const newCandles = json.data.map(c => ({
-                time: parseInt(c[0]),
-                high: parseFloat(c[2]),
-                low: parseFloat(c[3]),
-                close: parseFloat(c[4])
-            }));
-            
-            allCandles.push(...newCandles);
-            
-            if (newCandles.length < maxLimitPerRequest) {
-                break; // API returned less than requested, end of data
-            }
-            
-            const lastTimestamp = newCandles[newCandles.length - 1].time;
-            before = `&before=${lastTimestamp}`;
-        }
-        return allCandles.reverse(); // Return oldest to newest
-    } catch (e) {
-        console.error(`Error fetching historical candles for ${instId}:`, e);
-        return [];
-    }
-}
-
-async function getAssetPriceExtremes(instId) {
-    try {
-        const [yearlyCandles, allTimeCandles] = await Promise.all([
-            getHistoricalCandles(instId, '1D', 365),
-            getHistoricalCandles(instId, '1M', 1200) // Fetch up to 100 years of monthly data
-        ]);
-
-        if (yearlyCandles.length === 0) return null;
-
-        const getHighLow = (candles) => {
-            if (!candles || candles.length === 0) return { high: 0, low: Infinity };
-            return candles.reduce((acc, candle) => ({
-                high: Math.max(acc.high, candle.high),
-                low: Math.min(acc.low, candle.low)
-            }), { high: 0, low: Infinity });
-        };
-
-        const weeklyCandles = yearlyCandles.slice(-7);
-        const monthlyCandles = yearlyCandles.slice(-30);
-        
-        const formatLow = (low) => low === Infinity ? 0 : low;
-
-        const weeklyExtremes = getHighLow(weeklyCandles);
-        const monthlyExtremes = getHighLow(monthlyCandles);
-        const yearlyExtremes = getHighLow(yearlyCandles);
-        const allTimeExtremes = getHighLow(allTimeCandles);
-
-        return {
-            weekly: { high: weeklyExtremes.high, low: formatLow(weeklyExtremes.low) },
-            monthly: { high: monthlyExtremes.high, low: formatLow(monthlyExtremes.low) },
-            yearly: { high: yearlyExtremes.high, low: formatLow(yearlyExtremes.low) },
-            allTime: { high: allTimeExtremes.high, low: formatLow(allTimeExtremes.low) }
-        };
-    } catch (error) {
-        console.error(`Error in getAssetPriceExtremes for ${instId}:`, error);
-        return null;
-    }
-}
-
+async function getHistoricalCandles(instId, bar = '1D', limit = 100) { try { const res = await fetch(`${okxAdapter.baseURL}/api/v5/market/history-candles?instId=${instId}&bar=${bar}&limit=${limit}`); const json = await res.json(); if (json.code !== '0' || !json.data || json.data.length === 0) return []; return json.data.map(c => ({ time: parseInt(c[0]), close: parseFloat(c[4]) })).reverse(); } catch (e) { return []; } }
 function calculateSMA(closes, period) { if (closes.length < period) return null; const sum = closes.slice(-period).reduce((acc, val) => acc + val, 0); return sum / period; }
 function calculateRSI(closes, period = 14) { if (closes.length < period + 1) return null; let gains = 0, losses = 0; for (let i = 1; i <= period; i++) { const diff = closes[i] - closes[i - 1]; diff > 0 ? gains += diff : losses -= diff; } let avgGain = gains / period, avgLoss = losses / period; for (let i = period + 1; i < closes.length; i++) { const diff = closes[i] - closes[i - 1]; if (diff > 0) { avgGain = (avgGain * (period - 1) + diff) / period; avgLoss = (avgLoss * (period - 1)) / period; } else { avgLoss = (avgLoss * (period - 1) - diff) / period; avgGain = (avgGain * (period - 1)) / period; } } if (avgLoss === 0) return 100; const rs = avgGain / avgLoss; return 100 - (100 / (1 + rs)); }
-async function getTechnicalAnalysis(instId) { const candleData = (await getHistoricalCandles(instId, '1D', 51)); if (candleData.length < 51) return { error: "بيانات الشموع غير كافية." }; const closes = candleData.map(c => c.close); return { rsi: calculateRSI(closes), sma20: calculateSMA(closes, 20), sma50: calculateSMA(closes, 50) }; }
+async function getTechnicalAnalysis(instId) { const closes = (await getHistoricalCandles(instId, '1D', 51)).map(c => c.close); if (closes.length < 51) return { error: "بيانات الشموع غير كافية." }; return { rsi: calculateRSI(closes), sma20: calculateSMA(closes, 20), sma50: calculateSMA(closes, 50) }; }
 function calculatePerformanceStats(history) { if (history.length < 2) return null; const values = history.map(h => h.total); const startValue = values[0]; const endValue = values[values.length - 1]; const pnl = endValue - startValue; const pnlPercent = (startValue > 0) ? (pnl / startValue) * 100 : 0; const maxValue = Math.max(...values); const minValue = Math.min(...values); const avgValue = values.reduce((sum, val) => sum + val, 0) / values.length; const dailyReturns = []; for (let i = 1; i < values.length; i++) { dailyReturns.push((values[i] - values[i - 1]) / values[i - 1]); } const bestDayChange = Math.max(...dailyReturns) * 100; const worstDayChange = Math.min(...dailyReturns) * 100; const avgReturn = dailyReturns.reduce((sum, ret) => sum + ret, 0) / dailyReturns.length; const volatility = Math.sqrt(dailyReturns.map(x => Math.pow(x - avgReturn, 2)).reduce((a, b) => a + b) / dailyReturns.length) * 100; let volText = "متوسط"; if(volatility < 1) volText = "منخفض"; if(volatility > 5) volText = "مرتفع"; return { startValue, endValue, pnl, pnlPercent, maxValue, minValue, avgValue, bestDayChange, worstDayChange, volatility, volText }; }
 function createChartUrl(data, type = 'line', title = '', labels = [], dataLabel = '') {
-    if (!data || data.length === 0) return null;
+    if (data.length === 0) return null;
     const pnl = data[data.length - 1] - data[0];
     const chartColor = pnl >= 0 ? 'rgb(75, 192, 75)' : 'rgb(255, 99, 132)';
     const chartBgColor = pnl >= 0 ? 'rgba(75, 192, 75, 0.2)' : 'rgba(255, 99, 132, 0.2)';
@@ -290,12 +211,15 @@ async function formatPortfolioMsg(assets, total, capital) {
 
         caption += `\n╭─ *${a.asset}/USDT*\n`;
         caption += `├─ *القيمة الحالية:* \`$${formatNumber(a.value)}\` (*الوزن:* \`${formatNumber(percent)}%\`)\n`;
+        caption += `├─ *سعر السوق:* \`$${formatNumber(a.price, 4)}\`\n`;
+        
+        const dailyChangeEmoji = a.change24h >= 0 ? '🟢⬆️' : '🔴⬇️';
+        caption += `├─ *الأداء اليومي:* ${dailyChangeEmoji} \`${formatNumber(a.change24h * 100)}%\`\n`;
+
         if (position?.avgBuyPrice) {
             caption += `├─ *متوسط الشراء:* \`$${formatNumber(position.avgBuyPrice, 4)}\`\n`;
         }
-        caption += `├─ *سعر السوق:* \`$${formatNumber(a.price, 4)}\`\n`;
-        const dailyChangeEmoji = a.change24h >= 0 ? '🟢⬆️' : '🔴⬇️';
-        caption += `├─ *الأداء اليومي:* ${dailyChangeEmoji} \`${formatNumber(a.change24h * 100)}%\`\n`;
+
         if (position?.avgBuyPrice > 0) {
             const totalCost = position.avgBuyPrice * a.amount;
             const assetPnl = a.value - totalCost;
@@ -369,50 +293,7 @@ async function formatAdvancedMarketAnalysis(ownedAssets = []) {
     
     return msg;
 }
-
-async function formatQuickStats(assets, total, capital) {
-    const pnl = capital > 0 ? total - capital : 0;
-    const pnlPercent = capital > 0 ? (pnl / capital) * 100 : 0;
-    const statusEmoji = pnl >= 0 ? '🟢' : '🔴';
-    const statusText = pnl >= 0 ? 'ربح' : 'خسارة';
-    
-    let msg = "⚡ *إحصائيات سريعة*\n\n";
-    msg += `💎 *إجمالي الأصول:* \`${assets.filter(a => a.asset !== 'USDT').length}\`\n`;
-    msg += `💰 *القيمة الحالية:* \`$${formatNumber(total)}\`\n`;
-    if (capital > 0) {
-        msg += `📈 *نسبة الربح/الخسارة:* \`${formatNumber(pnlPercent)}%\`\n`;
-        msg += `🎯 *الحالة:* ${statusEmoji} ${statusText}\n`;
-    }
-    
-    msg += `\n━━━━━━━━━━━━━━━━━━━━\n*تحليل القمم والقيعان للأصول:*\n`;
-
-    const cryptoAssets = assets.filter(a => a.asset !== "USDT");
-    if (cryptoAssets.length === 0) {
-        msg += "\n`لا توجد أصول في محفظتك لتحليلها.`";
-    } else {
-        const assetExtremesPromises = cryptoAssets.map(asset => 
-            getAssetPriceExtremes(`${asset.asset}-USDT`)
-        );
-        const assetExtremesResults = await Promise.all(assetExtremesPromises);
-
-        cryptoAssets.forEach((asset, index) => {
-            const extremes = assetExtremesResults[index];
-            msg += `\n🔸 *${asset.asset}:*\n`;
-            if (extremes) {
-                msg += ` *الأسبوعي:* قمة \`$${formatNumber(extremes.weekly.high, 4)}\` / قاع \`$${formatNumber(extremes.weekly.low, 4)}\`\n`;
-                msg += ` *الشهري:* قمة \`$${formatNumber(extremes.monthly.high, 4)}\` / قاع \`$${formatNumber(extremes.monthly.low, 4)}\`\n`;
-                msg += ` *السنوي:* قمة \`$${formatNumber(extremes.yearly.high, 4)}\` / قاع \`$${formatNumber(extremes.yearly.low, 4)}\`\n`;
-                msg += ` *التاريخي:* قمة \`$${formatNumber(extremes.allTime.high, 4)}\` / قاع \`$${formatNumber(extremes.allTime.low, 4)}\``;
-            } else {
-                msg += ` \`تعذر جلب البيانات التاريخية.\``;
-            }
-        });
-    }
-
-    msg += `\n\n⏰ *آخر تحديث:* ${new Date().toLocaleString("ar-EG", { timeZone: "Africa/Cairo" })}`;
-    return msg;
-}
-
+async function formatQuickStats(assets, total, capital) { const pnl = capital > 0 ? total - capital : 0; const pnlPercent = capital > 0 ? (pnl / capital) * 100 : 0; const statusEmoji = pnl >= 0 ? '🟢' : '🔴'; const statusText = pnl >= 0 ? 'ربح' : 'خسارة'; let msg = "⚡ *إحصائيات سريعة*\n\n"; msg += `💎 *إجمالي الأصول:* \`${assets.filter(a => a.asset !== 'USDT').length}\`\n`; msg += `💰 *القيمة الحالية:* \`$${formatNumber(total)}\`\n`; msg += `📈 *نسبة الربح/الخسارة:* \`${formatNumber(pnlPercent)}%\`\n`; msg += `🎯 *الحالة:* ${statusEmoji} ${statusText}\n\n`; msg += `⏰ *آخر تحديث:* ${new Date().toLocaleTimeString("ar-EG")}`; return msg; }
 async function formatPerformanceReport(period, periodLabel, history, btcHistory) {
     const stats = calculatePerformanceStats(history);
     if (!stats) return { error: "ℹ️ لا توجد بيانات كافية لهذه الفترة." };
@@ -485,7 +366,7 @@ async function formatDailyCopyReport() {
         report += `🔸اسم العملة: ${trade.asset}\n`;
         report += `🔸 نسبة الدخول من رأس المال: ${formatNumber(trade.entryCapitalPercent)}%\n`;
         report += `🔸 متوسط سعر الشراء: ${formatNumber(trade.avgBuyPrice, 4)}\n`;
-        report += `🔸 سعر الخروج: ${formatNumber(trade.avgSellPrice, 4)}\n`;
+        report += `🔸 سعر الخروج: ${formatNumber(trade.avgSellPrice, 4)}\`\n`;
         report += `🔸 نسبة الخروج من الكمية: ${formatNumber(trade.exitQuantityPercent)}%\n`;
         report += `🔸 النتيجة: ${trade.pnlPercent >= 0 ? '+' : ''}${formatNumber(trade.pnlPercent)}% ${resultEmoji}\n\n`;
         if (trade.entryCapitalPercent > 0) {
@@ -547,9 +428,7 @@ bot.on("callback_query:data", async (ctx) => {
             const portfolioHistory = (period === '24h' ? history.slice(-24) : history.slice(-limit));
             if (!portfolioHistory || portfolioHistory.length < 2) { await ctx.editMessageText("ℹ️ لا توجد بيانات كافية لهذه الفترة."); return; }
             
-            const btcHistoryCandles = await getHistoricalCandles('BTC-USDT', bar, limit);
-            const btcHistory = btcHistoryCandles.map(c => ({close: c.close}));
-
+            const btcHistory = await getHistoricalCandles('BTC-USDT', bar, limit);
             const report = await formatPerformanceReport(period, periodLabel, portfolioHistory, btcHistory);
 
             if (report.error) {
